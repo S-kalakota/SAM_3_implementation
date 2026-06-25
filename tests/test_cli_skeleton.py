@@ -29,6 +29,11 @@ class CliSkeletonTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("--vlm-backend", result.stdout)
         self.assertIn("--image-file", result.stdout)
+        self.assertIn("--live", result.stdout)
+        self.assertIn("--voice", result.stdout)
+        self.assertIn("--whisper-model", result.stdout)
+        self.assertNotIn("--stdin", result.stdout)
+        self.assertNotIn("--audio-file", result.stdout)
 
     def test_mock_pipeline_runs_without_camera_or_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -75,6 +80,8 @@ class CliSkeletonTests(unittest.TestCase):
                 str(image),
                 "--vlm-backend",
                 "qwen",
+                "--qwen-model",
+                "Qwen/not-a-real-local-model-for-test",
             )
 
         self.assertEqual(result.returncode, 2)
@@ -102,7 +109,7 @@ class CliSkeletonTests(unittest.TestCase):
 
             result = run_cli(
                 "--text",
-                "pick up the blue cube to the inspection bin",
+                "pick up the blue box to the inspection bin",
                 "--image-file",
                 str(image),
             )
@@ -113,7 +120,7 @@ class CliSkeletonTests(unittest.TestCase):
             set(envelope),
             {"input", "vlm", "visual_verification", "safety", "next"},
         )
-        self.assertEqual(envelope["vlm"]["command"]["object"], "blue cube")
+        self.assertEqual(envelope["vlm"]["command"]["object"], "blue box")
         self.assertEqual(envelope["next"]["status"], "ready_for_later_phase")
 
 

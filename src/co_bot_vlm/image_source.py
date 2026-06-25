@@ -5,7 +5,9 @@ from __future__ import annotations
 import struct
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -127,6 +129,72 @@ def _capture_camera_frame(camera_index: int) -> ImageFrame:
             details={"camera_index": camera_index},
         )
 
+    with _open_configured_camera(camera_index) as camera:
+        return _capture_frame_from_open_camera(
+            camera.cv2,
+            camera.capture,
+            camera_index,
+            camera.opencv_capture_backend,
+            frame_number=1,
+        )
+
+
+def iter_camera_frames(
+    *,
+    camera_index: int,
+    interval_seconds: float,
+    max_frames: int | None = None,
+) -> Iterator[ImageFrame]:
+    """Yield RGB frames from one generic camera until stopped."""
+
+    if camera_index < 0:
+        raise ValidationError(
+            code="invalid_camera_index",
+            message="Camera index must be zero or greater.",
+            details={"camera_index": camera_index},
+        )
+    if interval_seconds < 0:
+        raise ValidationError(
+            code="invalid_live_interval",
+            message="Live camera interval must be zero or greater.",
+            details={"interval_seconds": interval_seconds},
+        )
+    if max_frames is not None and max_frames <= 0:
+        raise ValidationError(
+            code="invalid_max_frames",
+            message="Live camera max frame count must be greater than zero.",
+            details={"max_frames": max_frames},
+        )
+
+    frame_number = 0
+    with _open_configured_camera(camera_index) as camera:
+        while max_frames is None or frame_number < max_frames:
+            frame_number += 1
+            yield _capture_frame_from_open_camera(
+                camera.cv2,
+                camera.capture,
+                camera_index,
+                camera.opencv_capture_backend,
+                frame_number=frame_number,
+            )
+            if interval_seconds:
+                time.sleep(interval_seconds)
+
+
+@dataclass(frozen=True)
+class _OpenCamera:
+    cv2: Any
+    capture: Any
+    opencv_capture_backend: str
+
+    def __enter__(self) -> "_OpenCamera":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self.capture.release()
+
+
+def _open_configured_camera(camera_index: int) -> _OpenCamera:
     try:
         import cv2  # type: ignore[import-not-found]
     except ImportError as exc:
@@ -140,51 +208,65 @@ def _capture_camera_frame(camera_index: int) -> ImageFrame:
         ) from exc
 
     capture, opencv_capture_backend = _open_video_capture(cv2, camera_index)
-    try:
-        _configure_capture(cv2, capture)
-        if not capture.isOpened():
-            raise BackendUnavailableError(
-                code="camera_backend_unavailable",
-                message=(
-                    "Camera backend unavailable: could not open generic RGB "
-                    f"camera index {camera_index}. Use --image-file for "
-                    "repeatable checks. On macOS, verify camera permission "
-                    "for the terminal or app running this command."
-                ),
-                details={"camera_index": camera_index},
-            )
-
-        frame, read_metadata = _read_live_frame(capture, camera_index)
-        height, width = _frame_dimensions(frame, camera_index)
-        try:
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        except Exception as exc:
-            raise BackendUnavailableError(
-                code="camera_backend_unavailable",
-                message=(
-                    "Camera backend unavailable: captured frame could not be "
-                    "converted to RGB."
-                ),
-                details={"camera_index": camera_index, "error": str(exc)},
-            ) from exc
-        snapshot_path = _write_camera_snapshot(cv2, frame, camera_index)
-        return ImageFrame(
-            source_type="camera",
-            path=snapshot_path,
-            width=width,
-            height=height,
-            metadata={
-                "camera_index": camera_index,
-                "backend": "opencv",
-                "opencv_capture_backend": opencv_capture_backend,
-                "color_space": "RGB",
-                "snapshot_path": snapshot_path,
-                **read_metadata,
-            },
-            image=rgb_frame,
-        )
-    finally:
+    _configure_capture(cv2, capture)
+    if not capture.isOpened():
         capture.release()
+        raise BackendUnavailableError(
+            code="camera_backend_unavailable",
+            message=(
+                "Camera backend unavailable: could not open generic RGB "
+                f"camera index {camera_index}. Use --image-file for "
+                "repeatable checks. On macOS, verify camera permission "
+                "for the terminal or app running this command."
+            ),
+            details={"camera_index": camera_index},
+        )
+
+    return _OpenCamera(
+        cv2=cv2,
+        capture=capture,
+        opencv_capture_backend=opencv_capture_backend,
+    )
+
+
+def _capture_frame_from_open_camera(
+    cv2: Any,
+    capture: Any,
+    camera_index: int,
+    opencv_capture_backend: str,
+    *,
+    frame_number: int,
+) -> ImageFrame:
+    frame, read_metadata = _read_live_frame(capture, camera_index)
+    height, width = _frame_dimensions(frame, camera_index)
+    try:
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    except Exception as exc:
+        raise BackendUnavailableError(
+            code="camera_backend_unavailable",
+            message=(
+                "Camera backend unavailable: captured frame could not be "
+                "converted to RGB."
+            ),
+            details={"camera_index": camera_index, "error": str(exc)},
+        ) from exc
+    snapshot_path = _write_camera_snapshot(cv2, frame, camera_index)
+    return ImageFrame(
+        source_type="camera",
+        path=snapshot_path,
+        width=width,
+        height=height,
+        metadata={
+            "camera_index": camera_index,
+            "backend": "opencv",
+            "opencv_capture_backend": opencv_capture_backend,
+            "color_space": "RGB",
+            "snapshot_path": snapshot_path,
+            "frame_number": frame_number,
+            **read_metadata,
+        },
+        image=rgb_frame,
+    )
 
 
 def _open_video_capture(cv2: Any, camera_index: int) -> tuple[Any, str]:
@@ -330,6 +412,7 @@ def _read_dimensions(path: Path) -> tuple[int | None, int | None, str | None]:
             width, height = struct.unpack("<HH", header[6:10])
             return width, height, "gif"
         if header.startswith(b"\xff\xd8"):
+            handle.seek(2)
             width, height = _read_jpeg_dimensions(handle)
             return width, height, "jpeg" if width is not None and height is not None else None
     return None, None, None

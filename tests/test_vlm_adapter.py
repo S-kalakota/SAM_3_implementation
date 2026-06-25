@@ -9,6 +9,7 @@ from co_bot_vlm.transcript import Transcript
 from co_bot_vlm.vlm import (
     MockVLMBackend,
     VLM_SCHEMA_VERSION,
+    build_vlm_response_from_text,
     parse_vlm_json_output,
     validate_vlm_output,
 )
@@ -39,12 +40,24 @@ class VLMAdapterTests(unittest.TestCase):
         self.assertEqual(result.grounding.object, "red cup")
         self.assertEqual(result.payload["bbox_xyxy"], [280, 190, 360, 310])
 
-    def test_vlm_accepts_known_object_synonym(self) -> None:
-        result = validate_vlm_output(vlm_payload(object="blue block"))
+    def test_vlm_accepts_blue_box(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="blue box"))
 
-        self.assertEqual(result.command.object, "blue cube")
-        self.assertEqual(result.grounding.object, "blue cube")
-        self.assertEqual(result.payload["object"], "blue cube")
+        self.assertEqual(result.command.object, "blue box")
+        self.assertEqual(result.grounding.object, "blue box")
+        self.assertEqual(result.payload["object"], "blue box")
+
+    def test_vlm_rejects_blue_cube(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            validate_vlm_output(vlm_payload(object="blue cube"))
+
+        self.assertEqual(context.exception.code, "unsupported_object")
+
+    def test_vlm_rejects_blue_block(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            validate_vlm_output(vlm_payload(object="blue block"))
+
+        self.assertEqual(context.exception.code, "unsupported_object")
 
     def test_vlm_rejects_unsupported_object(self) -> None:
         with self.assertRaises(ValidationError) as context:
@@ -61,6 +74,19 @@ class VLMAdapterTests(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "vlm_required_fields_missing")
         self.assertEqual(context.exception.details["missing"], ["bbox_xyxy"])
+
+    def test_vlm_response_fills_missing_image_size_from_image_source(self) -> None:
+        payload = vlm_payload(bbox_xyxy=[280, 190, 360, 310])
+        del payload["image_size"]
+
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output=json.dumps(payload),
+            fallback_image_size=[1280, 720],
+        )
+
+        self.assertEqual(response.output["image_size"], [1280, 720])
 
     def test_vlm_rejects_invalid_bbox(self) -> None:
         with self.assertRaises(ValidationError) as context:
@@ -80,6 +106,15 @@ class VLMAdapterTests(unittest.TestCase):
             parse_vlm_json_output('Here is the result: {"action":"pick_and_place"}')
 
         self.assertEqual(context.exception.code, "vlm_output_not_json")
+
+    def test_vlm_accepts_first_json_object_with_trailing_model_output(self) -> None:
+        payload = parse_vlm_json_output(
+            json.dumps(vlm_payload(object="blue box"))
+            + "\nThe requested object is visible."
+        )
+
+        self.assertEqual(payload["object"], "blue box")
+        self.assertEqual(payload["action"], "pick_and_place")
 
     def test_vlm_rejects_non_standard_json_constant(self) -> None:
         with self.assertRaises(ValidationError) as context:

@@ -43,7 +43,7 @@ class VisualSafetyTests(unittest.TestCase):
 
     def test_wrong_object_rejected(self) -> None:
         decision = check_verified_command(
-            TaskCommand("pick_and_place", "blue cube", "drop zone"),
+            TaskCommand("pick_and_place", "green bottle", "drop zone"),
             grounding(object="red cup"),
         )
 

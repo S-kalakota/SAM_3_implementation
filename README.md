@@ -6,6 +6,26 @@ This phase verifies that a requested object is visually present in a single RGB
 image. It does not produce robot poses, joint angles, gripper commands,
 trajectories, or motion commands.
 
+## Current Safety Guidelines
+
+Approval means the command is valid and the requested object was visually
+verified. It does not mean the robot is allowed to move yet.
+
+Supported object targets:
+
+- `red cup`: aliases `cup`, `red mug`, `mug`
+- `blue box`
+- `green bottle`: alias `bottle`
+
+Visual approval requires:
+
+- object is marked visible;
+- confidence is at least `0.80`;
+- bounding box is inside the image bounds;
+- VLM object matches the parsed command object after alias normalization.
+
+Unsupported objects, such as `orange object`, are blocked.
+
 ## Run
 
 ```bash
@@ -25,6 +45,22 @@ not require camera hardware, model weights, Transformers, or the ZED SDK.
 .venv/bin/python -m co_bot_vlm.cli --vlm-backend qwen --text "pick up the red cup" --image-file path/to/frame.jpg
 ```
 
+Qwen setup is optional and heavier than the mock backend:
+
+```bash
+.venv/bin/python -m pip install -e ".[qwen]"
+.venv/bin/python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download("Qwen/Qwen2.5-VL-3B-Instruct", repo_type="model")
+PY
+```
+
+The default local Qwen model is `Qwen/Qwen2.5-VL-3B-Instruct`. Override it with
+`--qwen-model` or `CO_BOT_VLM_QWEN_MODEL_ID`. On macOS, the Qwen backend defaults
+to `CO_BOT_VLM_QWEN_DEVICE_MAP=cpu` because the Apple MPS backend can exceed
+Metal temporary tensor limits for this model. CPU inference is slower but avoids
+hard crashes.
+
 For a live camera snapshot, install the project dependencies and pass a generic
 camera index:
 
@@ -37,5 +73,33 @@ saves a temporary snapshot for downstream VLM backends. A ZED 2i can be used
 only if the OS exposes it as a normal RGB video device; this phase does not
 require the ZED SDK.
 
-The `qwen`, audio, and voice paths are intentionally clear stubs for later
-agents.
+For a continuous camera check, add `--live`. Use `--max-frames` for a bounded
+test or omit it and stop with Ctrl-C:
+
+```bash
+.venv/bin/co-bot-vlm --live --camera-index 0 --max-frames 5 --text "pick up the red cup to the drop zone"
+.venv/bin/co-bot-vlm --live --camera-index 0 --stop-on-approved --text "pick up the blue box to the bin"
+```
+
+For spoken commands, install the voice extras, download the default Whisper
+model, and make sure SoX's `rec` command is available:
+
+```bash
+.venv/bin/python -m pip install -e ".[voice]"
+.venv/bin/python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download("openai/whisper-tiny.en", repo_type="model")
+PY
+```
+
+Then run with `--voice`. The command records for `--voice-duration` seconds,
+transcribes the microphone audio with Whisper, and sends the transcript into the
+same image/VLM pipeline:
+
+```bash
+.venv/bin/co-bot-vlm --voice --voice-duration 5 --vlm-backend qwen --image-file path/to/frame.jpg --pretty
+```
+
+Override the Whisper model with `--whisper-model` or
+`CO_BOT_VLM_WHISPER_MODEL_ID`. On macOS, grant microphone permission to the
+terminal app running the command.

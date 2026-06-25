@@ -21,6 +21,21 @@ def minimal_png(width: int, height: int) -> bytes:
     )
 
 
+def minimal_jpeg_with_app_segment(width: int, height: int) -> bytes:
+    return (
+        b"\xff\xd8"
+        b"\xff\xe0"
+        b"\x00\x10"
+        b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+        b"\xff\xc0"
+        b"\x00\x11"
+        b"\x08"
+        + height.to_bytes(2, "big")
+        + width.to_bytes(2, "big")
+        + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+    )
+
+
 class ImageSourceTests(unittest.TestCase):
     def test_load_image_file_returns_dimensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -34,6 +49,19 @@ class ImageSourceTests(unittest.TestCase):
         self.assertEqual(frame.height, 720)
         self.assertEqual(frame.image_size, [1280, 720])
         self.assertEqual(frame.metadata["format"], "png")
+
+    def test_load_jpeg_with_app_segment_returns_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "frame.jpeg"
+            image.write_bytes(minimal_jpeg_with_app_segment(5712, 4284))
+
+            frame = get_image_frame(image_file=image, camera_index=None)
+
+        self.assertEqual(frame.source_type, "image_file")
+        self.assertEqual(frame.width, 5712)
+        self.assertEqual(frame.height, 4284)
+        self.assertEqual(frame.image_size, [5712, 4284])
+        self.assertEqual(frame.metadata["format"], "jpeg")
 
     def test_missing_image_file_errors_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -27,6 +27,9 @@ class VisualVerification:
 def verify_visual_grounding(payload: dict[str, Any]) -> VisualVerification:
     """Build grounding from VLM payload and run Agent 2 validation."""
 
+    if payload.get("action") == "return_home":
+        return VisualVerification(True, "no object visibility required", None)
+
     grounding = VisualGrounding(
         visible=bool(payload.get("visible", False)),
         confidence=float(payload.get("confidence", 0.0)),

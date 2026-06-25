@@ -26,7 +26,12 @@ def success_envelope(
     visual_verification: VisualVerification,
     safety: SafetyDecision,
 ) -> dict[str, Any]:
-    next_step = "ready_for_later_phase" if safety.approved else "blocked"
+    next_step = "ready_for_later_phase" if safety.approved else "blocked_by_safety"
+    next_description = (
+        f"{safety.reason}; no robot motion is produced in this phase."
+        if safety.approved
+        else safety.reason
+    )
     return {
         "input": {
             "transcript": asdict(transcript),
@@ -43,11 +48,7 @@ def success_envelope(
         "safety": asdict(safety),
         "next": {
             "status": next_step,
-            "description": (
-                "No robot motion is produced in this phase."
-                if safety.approved
-                else "Fix the input image, transcript, or backend before continuing."
-            ),
+            "description": next_description,
         },
     }
 

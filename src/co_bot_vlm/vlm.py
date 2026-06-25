@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import math
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from .command import TaskCommand, parse_vla_output
+from .command import SUPPORTED_OBJECT_ALIASES, TaskCommand, parse_vla_output, supported_objects
 from .errors import BackendUnavailableError, ValidationError
 from .image_source import ImageFrame
 from .transcript import Transcript
@@ -18,7 +21,10 @@ from .visual_grounding import VisualGrounding
 
 
 VLM_SCHEMA_VERSION = "object-existence-v1"
-QWEN_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+QWEN_MODEL_ID = os.environ.get(
+    "CO_BOT_VLM_QWEN_MODEL_ID",
+    "Qwen/Qwen2.5-VL-3B-Instruct",
+)
 QWEN_MAX_NEW_TOKENS = 256
 
 PICK_AND_PLACE_REQUIRED_FIELDS = (
@@ -41,19 +47,7 @@ MOTION_CONTROL_FIELDS = {
     "robot_command",
     "trajectory",
 }
-SUPPORTED_OBJECT_ALIASES = {
-    "red cup": "red cup",
-    "cup": "red cup",
-    "red mug": "red cup",
-    "mug": "red cup",
-    "blue cube": "blue cube",
-    "cube": "blue cube",
-    "blue block": "blue cube",
-    "block": "blue cube",
-    "green bottle": "green bottle",
-    "bottle": "green bottle",
-}
-SUPPORTED_OBJECTS = tuple(sorted(set(SUPPORTED_OBJECT_ALIASES.values())))
+SUPPORTED_OBJECTS = tuple(supported_objects())
 
 
 @dataclass(frozen=True)
@@ -79,12 +73,12 @@ class VLMBackend(Protocol):
         """Analyze one transcript and one RGB image."""
 
 
-def create_vlm_backend(name: str) -> VLMBackend:
+def create_vlm_backend(name: str, *, qwen_model: str | None = None) -> VLMBackend:
     normalized = name.strip().lower()
     if normalized == "mock":
         return MockVLMBackend()
     if normalized == "qwen":
-        return QwenVLMBackend()
+        return QwenVLMBackend(model_id=qwen_model or QWEN_MODEL_ID)
     raise ValidationError(
         code="unknown_vlm_backend",
         message=f"Unknown VLM backend: {name}",
@@ -97,16 +91,26 @@ class MockVLMBackend:
     model = "deterministic-contract-v1"
 
     def analyze(self, transcript: Transcript, image: ImageFrame) -> VLMResponse:
+        action = _infer_action(transcript.text)
+        if action == "return_home":
+            return build_vlm_response(
+                backend=self.name,
+                model=self.model,
+                payload={"action": "return_home"},
+                metadata={"deterministic": True},
+            )
+
         width = image.width or 640
         height = image.height or 480
         object_name = _infer_object(transcript.text)
         destination = _infer_destination(transcript.text)
+        visible, confidence = _infer_visual_presence(transcript.text)
         output = {
-            "action": "pick_and_place",
+            "action": action,
             "object": object_name,
             "destination": destination,
-            "visible": True,
-            "confidence": 0.9,
+            "visible": visible,
+            "confidence": confidence,
             "bbox_xyxy": [
                 max(0, width // 4),
                 max(0, height // 4),
@@ -133,6 +137,7 @@ class QwenVLMBackend:
         model_id: str = QWEN_MODEL_ID,
         max_new_tokens: int = QWEN_MAX_NEW_TOKENS,
         local_files_only: bool | None = None,
+        device_map: str | None = None,
     ) -> None:
         self.model = model_id
         self.max_new_tokens = max_new_tokens
@@ -141,6 +146,11 @@ class QwenVLMBackend:
             if local_files_only is None
             else local_files_only
         )
+        self.device_map = (
+            os.environ.get("CO_BOT_VLM_QWEN_DEVICE_MAP")
+            if device_map is None
+            else device_map
+        ) or _default_qwen_device_map()
 
     def analyze(self, transcript: Transcript, image: ImageFrame) -> VLMResponse:
         raw_output = self._generate_text(transcript, image)
@@ -148,13 +158,25 @@ class QwenVLMBackend:
             backend=self.name,
             model=self.model,
             raw_output=raw_output,
+            fallback_image_size=image.image_size,
             metadata={
                 "max_new_tokens": self.max_new_tokens,
                 "local_files_only": self.local_files_only,
+                "device_map": self.device_map,
+                "image_size_source": "vlm_or_input_image",
             },
         )
 
     def _generate_text(self, transcript: Transcript, image: ImageFrame) -> str:
+        log_buffer = _StdoutToStderr()
+        with contextlib.redirect_stdout(log_buffer):
+            return self._generate_text_with_redirected_logs(transcript, image)
+
+    def _generate_text_with_redirected_logs(
+        self,
+        transcript: Transcript,
+        image: ImageFrame,
+    ) -> str:
         if image.path is None:
             raise ValidationError(
                 code="qwen_requires_image_file",
@@ -180,7 +202,7 @@ class QwenVLMBackend:
             model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 self.model,
                 torch_dtype="auto",
-                device_map="auto",
+                device_map=self.device_map,
                 local_files_only=self.local_files_only,
             )
             processor = AutoProcessor.from_pretrained(
@@ -202,10 +224,20 @@ class QwenVLMBackend:
         image_uri = Path(image.path).resolve().as_uri()
         messages = [
             {
+                "role": "system",
+                "content": (
+                    "You are a strict JSON API. Return raw JSON only. "
+                    "Do not use Markdown, code fences, explanations, or prose."
+                ),
+            },
+            {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image_uri},
-                    {"type": "text", "text": build_vlm_prompt(transcript.text)},
+                    {
+                        "type": "text",
+                        "text": build_vlm_prompt(transcript.text, image.image_size),
+                    },
                 ],
             }
         ]
@@ -273,9 +305,11 @@ def build_vlm_response_from_text(
     backend: str,
     model: str,
     raw_output: str,
+    fallback_image_size: list[int] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> VLMResponse:
     payload = parse_vlm_json_output(raw_output)
+    payload = _fill_missing_image_size(payload, fallback_image_size)
     return build_vlm_response(
         backend=backend,
         model=model,
@@ -294,8 +328,11 @@ def parse_vlm_json_output(raw_output: str) -> dict[str, Any]:
             details={"type": type(raw_output).__name__},
         )
 
+    stripped_output = raw_output.strip()
     try:
-        payload = json.loads(raw_output, parse_constant=_reject_json_constant)
+        payload, _end_index = json.JSONDecoder(
+            parse_constant=_reject_json_constant,
+        ).raw_decode(stripped_output)
     except ValueError as exc:
         raise ValidationError(
             code="vlm_output_not_json",
@@ -310,6 +347,17 @@ def parse_vlm_json_output(raw_output: str) -> dict[str, Any]:
             details={"type": type(payload).__name__},
         )
     return payload
+
+
+def _fill_missing_image_size(
+    payload: dict[str, Any],
+    fallback_image_size: list[int] | None,
+) -> dict[str, Any]:
+    if "image_size" in payload or fallback_image_size is None:
+        return payload
+    if payload.get("action") != "pick_and_place":
+        return payload
+    return {**payload, "image_size": fallback_image_size}
 
 
 def validate_vlm_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -388,22 +436,55 @@ def validate_vlm_output(payload: dict[str, Any]) -> VLMValidatedOutput:
     return VLMValidatedOutput(payload=validated, command=command, grounding=grounding)
 
 
-def build_vlm_prompt(transcript_text: str) -> str:
+def build_vlm_prompt(transcript_text: str, image_size: list[int] | None = None) -> str:
+    image_size_instruction = (
+        f"The input image_size is exactly {image_size}; use this value unchanged. "
+        if image_size is not None
+        else ""
+    )
     return (
         "You are verifying whether a requested object exists in one RGB image. "
-        "Return exactly one JSON object and nothing else. "
+        "Return exactly one raw JSON object and nothing else. "
+        "The first character must be { and the last character must be }. "
+        "Do not wrap the answer in ```json or any Markdown fence. "
         "Allowed schema for a pick-and-place command: "
-        '{"action":"pick_and_place","object":"red cup|blue cube|green bottle",'
-        '"destination":"<destination>","visible":true|false,'
+        '{"action":"pick_and_place","object":"red cup|blue box|green bottle",'
+        '"destination":"drop zone","visible":true|false,'
         '"confidence":0.0-1.0,"bbox_xyxy":[x1,y1,x2,y2],'
         '"image_size":[width,height]}. '
+        f"{image_size_instruction}"
+        "Use the destination phrase from the transcript without angle brackets. "
         "Use integer pixel coordinates within image_size. "
-        "Allowed object synonyms are cup/red mug for red cup, cube/blue block "
-        "for blue cube, and bottle for green bottle. "
+        "Allowed object synonyms are cup/red mug for red cup and bottle for "
+        "green bottle. There are no synonyms for blue box. "
         "Do not include joint_angles, pose, object_pose, velocity, gripper, "
         "robot_command, trajectory, or any other fields. "
         f"Transcript: {transcript_text}"
     )
+
+
+def _infer_action(text: str) -> str:
+    lowered = _normalize_text(text)
+    if re.search(r"\b(?:return home|go home|home position)\b", lowered):
+        return "return_home"
+    return "pick_and_place"
+
+
+def _infer_visual_presence(text: str) -> tuple[bool, float]:
+    lowered = _normalize_text(text)
+    absence_patterns = (
+        "not visible",
+        "not present",
+        "not in the image",
+        "not in image",
+        "cannot see",
+        "can't see",
+        "missing",
+        "absent",
+    )
+    if any(pattern in lowered for pattern in absence_patterns):
+        return False, 0.2
+    return True, 0.9
 
 
 def _infer_object(text: str) -> str:
@@ -564,5 +645,20 @@ def _env_flag(name: str, *, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _default_qwen_device_map() -> str:
+    if sys.platform == "darwin":
+        return "cpu"
+    return "auto"
+
+
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant is not allowed: {value}")
+
+
+class _StdoutToStderr(io.TextIOBase):
+    def write(self, value: str) -> int:
+        sys.stderr.write(value)
+        return len(value)
+
+    def flush(self) -> None:
+        sys.stderr.flush()
