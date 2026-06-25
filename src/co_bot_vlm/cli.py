@@ -21,7 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audio-file", type=Path, help="Audio transcript source placeholder.")
     parser.add_argument("--voice", action="store_true", help="Live voice source placeholder.")
     parser.add_argument("--image-file", type=Path, help="RGB image file to verify.")
-    parser.add_argument("--camera-index", type=int, help="Generic RGB camera placeholder.")
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        help="Generic RGB camera index for one live OpenCV snapshot.",
+    )
     parser.add_argument(
         "--vlm-backend",
         choices=("mock", "qwen"),

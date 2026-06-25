@@ -30,7 +30,7 @@ def success_envelope(
     return {
         "input": {
             "transcript": asdict(transcript),
-            "image": asdict(image),
+            "image": image.to_public_dict(),
         },
         "vlm": {
             "backend": vlm.backend,

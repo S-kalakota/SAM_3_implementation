@@ -59,8 +59,14 @@ class CliSkeletonTests(unittest.TestCase):
 
     def test_qwen_backend_unavailable_error_is_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            image = Path(tmpdir) / "frame.jpg"
-            image.write_bytes(b"not really an image")
+            image = Path(tmpdir) / "frame.png"
+            image.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR"
+                b"\x00\x00\x02\x80"
+                b"\x00\x00\x01\xe0"
+                b"\x08\x02\x00\x00\x00"
+            )
 
             result = run_cli(
                 "--text",
@@ -76,18 +82,18 @@ class CliSkeletonTests(unittest.TestCase):
         self.assertEqual(envelope["next"]["error"]["code"], "qwen_backend_unavailable")
         self.assertIn("Qwen backend unavailable", envelope["next"]["error"]["message"])
 
-    def test_camera_backend_unavailable_error_is_clear(self) -> None:
+    def test_invalid_camera_index_error_is_clear(self) -> None:
         result = run_cli(
             "--text",
             "pick up the red cup",
             "--camera-index",
-            "0",
+            "-1",
         )
 
         self.assertEqual(result.returncode, 2)
         envelope = json.loads(result.stdout)
-        self.assertEqual(envelope["next"]["error"]["code"], "camera_backend_unavailable")
-        self.assertIn("Camera backend unavailable", envelope["next"]["error"]["message"])
+        self.assertEqual(envelope["next"]["error"]["code"], "invalid_camera_index")
+        self.assertIn("Camera index must be zero or greater", envelope["next"]["error"]["message"])
 
     def test_skeleton_output_schema_has_expected_top_level_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
