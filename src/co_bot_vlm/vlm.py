@@ -13,31 +13,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from .command import SUPPORTED_OBJECT_ALIASES, TaskCommand, parse_vla_output, supported_objects
+from .command import SUPPORTED_OBJECT_ALIASES, TaskCommand, supported_objects
 from .errors import BackendUnavailableError, ValidationError
 from .image_source import ImageFrame
-from .transcript import Transcript
 from .visual_grounding import VisualGrounding
 
 
-VLM_SCHEMA_VERSION = "object-existence-v1"
+VLM_SCHEMA_VERSION = "object-grounding-v1"
 QWEN_MODEL_ID = os.environ.get(
     "CO_BOT_VLM_QWEN_MODEL_ID",
     "Qwen/Qwen2.5-VL-3B-Instruct",
 )
 QWEN_MAX_NEW_TOKENS = 256
 
-PICK_AND_PLACE_REQUIRED_FIELDS = (
-    "action",
+GROUNDING_REQUIRED_FIELDS = (
     "object",
-    "destination",
     "visible",
     "confidence",
     "bbox_xyxy",
     "image_size",
 )
-RETURN_HOME_REQUIRED_FIELDS = ("action",)
-ALLOWED_FIELDS = set(PICK_AND_PLACE_REQUIRED_FIELDS)
+ALLOWED_FIELDS = set(GROUNDING_REQUIRED_FIELDS)
 MOTION_CONTROL_FIELDS = {
     "joint_angles",
     "pose",
@@ -53,7 +49,6 @@ SUPPORTED_OBJECTS = tuple(supported_objects())
 @dataclass(frozen=True)
 class VLMValidatedOutput:
     payload: dict[str, Any]
-    command: TaskCommand
     grounding: VisualGrounding | None
 
 
@@ -69,8 +64,8 @@ class VLMBackend(Protocol):
     name: str
     model: str
 
-    def analyze(self, transcript: Transcript, image: ImageFrame) -> VLMResponse:
-        """Analyze one transcript and one RGB image."""
+    def ground(self, command: TaskCommand, image: ImageFrame) -> VLMResponse:
+        """Ground one parsed target command in one RGB image."""
 
 
 def create_vlm_backend(name: str, *, qwen_model: str | None = None) -> VLMBackend:
@@ -90,27 +85,13 @@ class MockVLMBackend:
     name = "mock"
     model = "deterministic-contract-v1"
 
-    def analyze(self, transcript: Transcript, image: ImageFrame) -> VLMResponse:
-        action = _infer_action(transcript.text)
-        if action == "return_home":
-            return build_vlm_response(
-                backend=self.name,
-                model=self.model,
-                payload={"action": "return_home"},
-                metadata={"deterministic": True},
-            )
-
+    def ground(self, command: TaskCommand, image: ImageFrame) -> VLMResponse:
         width = image.width or 640
         height = image.height or 480
-        object_name = _infer_object(transcript.text)
-        destination = _infer_destination(transcript.text)
-        visible, confidence = _infer_visual_presence(transcript.text)
         output = {
-            "action": action,
-            "object": object_name,
-            "destination": destination,
-            "visible": visible,
-            "confidence": confidence,
+            "object": command.object or "requested object",
+            "visible": True,
+            "confidence": 0.9,
             "bbox_xyxy": [
                 max(0, width // 4),
                 max(0, height // 4),
@@ -123,7 +104,10 @@ class MockVLMBackend:
             backend=self.name,
             model=self.model,
             payload=output,
-            metadata={"deterministic": True},
+            metadata={
+                "deterministic": True,
+                "grounding_target": command.object,
+            },
         )
 
 
@@ -152,8 +136,8 @@ class QwenVLMBackend:
             else device_map
         ) or _default_qwen_device_map()
 
-    def analyze(self, transcript: Transcript, image: ImageFrame) -> VLMResponse:
-        raw_output = self._generate_text(transcript, image)
+    def ground(self, command: TaskCommand, image: ImageFrame) -> VLMResponse:
+        raw_output = self._generate_text(command, image)
         return build_vlm_response_from_text(
             backend=self.name,
             model=self.model,
@@ -164,17 +148,18 @@ class QwenVLMBackend:
                 "local_files_only": self.local_files_only,
                 "device_map": self.device_map,
                 "image_size_source": "vlm_or_input_image",
+                "grounding_target": command.object,
             },
         )
 
-    def _generate_text(self, transcript: Transcript, image: ImageFrame) -> str:
+    def _generate_text(self, command: TaskCommand, image: ImageFrame) -> str:
         log_buffer = _StdoutToStderr()
         with contextlib.redirect_stdout(log_buffer):
-            return self._generate_text_with_redirected_logs(transcript, image)
+            return self._generate_text_with_redirected_logs(command, image)
 
     def _generate_text_with_redirected_logs(
         self,
-        transcript: Transcript,
+        command: TaskCommand,
         image: ImageFrame,
     ) -> str:
         if image.path is None:
@@ -236,7 +221,7 @@ class QwenVLMBackend:
                     {"type": "image", "image": image_uri},
                     {
                         "type": "text",
-                        "text": build_vlm_prompt(transcript.text, image.image_size),
+                        "text": build_vlm_prompt(command.object or "", image.image_size),
                     },
                 ],
             }
@@ -319,7 +304,7 @@ def build_vlm_response_from_text(
 
 
 def parse_vlm_json_output(raw_output: str) -> dict[str, Any]:
-    """Parse a JSON-only VLM response into one top-level object."""
+    """Parse the first JSON object from a VLM response."""
 
     if not isinstance(raw_output, str) or not raw_output.strip():
         raise ValidationError(
@@ -328,17 +313,32 @@ def parse_vlm_json_output(raw_output: str) -> dict[str, Any]:
             details={"type": type(raw_output).__name__},
         )
 
+    decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
+    payload = None
+    last_error: ValueError | None = None
     stripped_output = raw_output.strip()
-    try:
-        payload, _end_index = json.JSONDecoder(
-            parse_constant=_reject_json_constant,
-        ).raw_decode(stripped_output)
-    except ValueError as exc:
+    for start_index, character in enumerate(stripped_output):
+        if character != "{":
+            continue
+        try:
+            candidate, _end_index = decoder.raw_decode(stripped_output[start_index:])
+        except ValueError as exc:
+            last_error = exc
+            continue
+        payload = candidate
+        break
+
+    if payload is None:
+        details: dict[str, Any] = {
+            "raw_preview": _preview_vlm_output(stripped_output),
+        }
+        if last_error is not None:
+            details["error"] = str(last_error)
         raise ValidationError(
             code="vlm_output_not_json",
-            message="VLM output must contain JSON only, with no prose or code fences.",
-            details={"error": str(exc)},
-        ) from exc
+            message="VLM output must contain at least one JSON object.",
+            details=details,
+        )
 
     if not isinstance(payload, dict):
         raise ValidationError(
@@ -349,13 +349,18 @@ def parse_vlm_json_output(raw_output: str) -> dict[str, Any]:
     return payload
 
 
+def _preview_vlm_output(raw_output: str, *, limit: int = 200) -> str:
+    compact = re.sub(r"\s+", " ", raw_output).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3] + "..."
+
+
 def _fill_missing_image_size(
     payload: dict[str, Any],
     fallback_image_size: list[int] | None,
 ) -> dict[str, Any]:
     if "image_size" in payload or fallback_image_size is None:
-        return payload
-    if payload.get("action") != "pick_and_place":
         return payload
     return {**payload, "image_size": fallback_image_size}
 
@@ -377,13 +382,7 @@ def validate_vlm_payload(payload: dict[str, Any]) -> dict[str, Any]:
             details={"blocked_fields": blocked},
         )
 
-    action = _require_string(payload, "action")
-    if action == "return_home":
-        return _validate_return_home_payload(payload)
-    if action != "pick_and_place":
-        parse_vla_output({"action": action})
-
-    missing = [key for key in PICK_AND_PLACE_REQUIRED_FIELDS if key not in payload]
+    missing = [key for key in GROUNDING_REQUIRED_FIELDS if key not in payload]
     if missing:
         raise ValidationError(
             code="vlm_required_fields_missing",
@@ -400,128 +399,66 @@ def validate_vlm_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     canonical_object = _canonicalize_object(payload["object"])
-    destination = _require_string(payload, "destination")
     visible = _require_bool(payload, "visible")
     confidence = _require_confidence(payload["confidence"])
     image_size = _validate_image_size(payload["image_size"])
-    bbox = _validate_bbox(payload["bbox_xyxy"], image_size)
+    bbox = _validate_bbox(payload["bbox_xyxy"], image_size, visible=visible)
 
     validated = {
-        "action": action,
         "object": canonical_object,
-        "destination": destination,
         "visible": visible,
         "confidence": confidence,
         "bbox_xyxy": bbox,
         "image_size": image_size,
     }
-    parse_vla_output(validated)
     return validated
 
 
 def validate_vlm_output(payload: dict[str, Any]) -> VLMValidatedOutput:
-    """Return the command and grounding objects produced from one VLM payload."""
+    """Return the validated grounding object produced from one VLM payload."""
 
     validated = validate_vlm_payload(payload)
-    command = parse_vla_output(validated)
-    grounding = None
-    if command.action == "pick_and_place":
-        grounding = VisualGrounding(
-            visible=validated["visible"],
-            confidence=validated["confidence"],
-            bbox_xyxy=validated["bbox_xyxy"],
-            image_size=validated["image_size"],
-            object=validated["object"],
-        )
-    return VLMValidatedOutput(payload=validated, command=command, grounding=grounding)
+    grounding = VisualGrounding(
+        visible=validated["visible"],
+        confidence=validated["confidence"],
+        bbox_xyxy=validated["bbox_xyxy"],
+        image_size=validated["image_size"],
+        object=validated["object"],
+    )
+    return VLMValidatedOutput(payload=validated, grounding=grounding)
 
 
-def build_vlm_prompt(transcript_text: str, image_size: list[int] | None = None) -> str:
+def build_vlm_prompt(target_object: str, image_size: list[int] | None = None) -> str:
     image_size_instruction = (
         f"The input image_size is exactly {image_size}; use this value unchanged. "
         if image_size is not None
         else ""
     )
     return (
-        "You are verifying whether a requested object exists in one RGB image. "
+        "You are a visual grounding model. Verify whether the requested target "
+        "object exists in one RGB image. "
         "Return exactly one raw JSON object and nothing else. "
         "The first character must be { and the last character must be }. "
         "Do not wrap the answer in ```json or any Markdown fence. "
-        "Allowed schema for a pick-and-place command: "
-        '{"action":"pick_and_place","object":"red cup|blue box|green bottle",'
-        '"destination":"drop zone","visible":true|false,'
-        '"confidence":0.0-1.0,"bbox_xyxy":[x1,y1,x2,y2],'
+        "Do not parse, rewrite, approve, or describe the robot command. "
+        "Only ground the requested target object. "
+        "Allowed schema: "
+        '{"object":"red cup|blue box|green bottle",'
+        '"visible":true|false,"confidence":0.0-1.0,'
+        '"bbox_xyxy":[x1,y1,x2,y2] or null,'
         '"image_size":[width,height]}. '
         f"{image_size_instruction}"
-        "Use the destination phrase from the transcript without angle brackets. "
-        "Use integer pixel coordinates within image_size. "
+        "Set object to the requested target exactly after allowed alias "
+        "normalization. If the target is not visible, set visible to false, "
+        "confidence to 0.0, and bbox_xyxy to null. "
+        "If visible is true, use integer pixel coordinates within image_size. "
         "Allowed object synonyms are cup/red mug for red cup and bottle for "
         "green bottle. There are no synonyms for blue box. "
-        "Do not include joint_angles, pose, object_pose, velocity, gripper, "
-        "robot_command, trajectory, or any other fields. "
-        f"Transcript: {transcript_text}"
+        "Do not include action, destination, source, joint_angles, pose, "
+        "object_pose, velocity, gripper, robot_command, trajectory, or any "
+        "other fields. "
+        f"Requested target object: {target_object}"
     )
-
-
-def _infer_action(text: str) -> str:
-    lowered = _normalize_text(text)
-    if re.search(r"\b(?:return home|go home|home position)\b", lowered):
-        return "return_home"
-    return "pick_and_place"
-
-
-def _infer_visual_presence(text: str) -> tuple[bool, float]:
-    lowered = _normalize_text(text)
-    absence_patterns = (
-        "not visible",
-        "not present",
-        "not in the image",
-        "not in image",
-        "cannot see",
-        "can't see",
-        "missing",
-        "absent",
-    )
-    if any(pattern in lowered for pattern in absence_patterns):
-        return False, 0.2
-    return True, 0.9
-
-
-def _infer_object(text: str) -> str:
-    lowered = _normalize_text(text)
-    for candidate in sorted(SUPPORTED_OBJECT_ALIASES, key=len, reverse=True):
-        if re.search(rf"\b{re.escape(candidate)}\b", lowered):
-            return candidate
-
-    match = re.search(
-        r"\b(?:pick up|pick|grab|move)\s+(?:the\s+|a\s+|an\s+)?(.+?)(?:\s+(?:to|into|onto)\b|$)",
-        lowered,
-    )
-    if match:
-        return match.group(1).strip().rstrip(".")
-    return "requested object"
-
-
-def _infer_destination(text: str) -> str:
-    lowered = text.lower()
-    match = re.search(r"\b(?:to|into|onto)\s+the\s+(.+)$", lowered)
-    if match:
-        return match.group(1).strip().rstrip(".")
-    return "drop zone"
-
-
-def _validate_return_home_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    unexpected = sorted(set(payload) - set(RETURN_HOME_REQUIRED_FIELDS))
-    if unexpected:
-        raise ValidationError(
-            code="vlm_unexpected_fields",
-            message=(
-                "return_home VLM output must not include object, visual, or "
-                f"extra field(s): {', '.join(unexpected)}"
-            ),
-            details={"unexpected": unexpected, "schema_version": VLM_SCHEMA_VERSION},
-        )
-    return {"action": "return_home"}
 
 
 def _canonicalize_object(value: Any) -> str:
@@ -599,7 +536,14 @@ def _validate_image_size(value: Any) -> list[int]:
     return [width, height]
 
 
-def _validate_bbox(value: Any, image_size: list[int]) -> list[int]:
+def _validate_bbox(
+    value: Any,
+    image_size: list[int],
+    *,
+    visible: bool,
+) -> list[int] | None:
+    if not visible:
+        return None
     if (
         not isinstance(value, list)
         or len(value) != 4
@@ -632,7 +576,7 @@ def _normalize_text(value: str) -> str:
 def _metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     values = dict(metadata or {})
     values["schema_version"] = VLM_SCHEMA_VERSION
-    values["required_fields"] = list(PICK_AND_PLACE_REQUIRED_FIELDS)
+    values["required_fields"] = list(GROUNDING_REQUIRED_FIELDS)
     values["motion_control_fields_rejected"] = True
     values["supported_objects"] = list(SUPPORTED_OBJECTS)
     return values

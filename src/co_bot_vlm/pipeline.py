@@ -5,14 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from .command import TaskCommand, parse_transcript_command, parse_vla_output
-from .errors import ValidationError
+from .command import parse_transcript_command
 from .image_source import ImageFrame, get_image_frame, iter_camera_frames
 from .result import success_envelope
 from .safety import check_safety
 from .transcript import Transcript, get_transcript
-from .visual_grounding import verify_visual_grounding
-from .vlm import VLMBackend, create_vlm_backend
+from .visual_grounding import VisualVerification, verify_visual_grounding
+from .vlm import VLMBackend, VLMResponse, create_vlm_backend
 
 
 def run_pipeline(
@@ -70,11 +69,25 @@ def run_verification(
     image: ImageFrame,
     backend: VLMBackend,
 ) -> dict:
-    requested_command = parse_transcript_command(transcript.text)
-    vlm = backend.analyze(transcript, image)
-    vlm_command = parse_vla_output(vlm.output)
-    command = _require_matching_commands(requested_command, vlm_command)
-    visual_verification = verify_visual_grounding(vlm.output)
+    command = parse_transcript_command(transcript.text)
+    if command.action == "return_home":
+        vlm = VLMResponse(
+            backend=backend.name,
+            model=backend.model,
+            output={},
+            metadata={
+                "skipped": True,
+                "reason": "return_home command has no target object to ground",
+            },
+        )
+        visual_verification = VisualVerification(
+            approved=True,
+            reason="no object visibility required",
+            grounding=None,
+        )
+    else:
+        vlm = backend.ground(command, image)
+        visual_verification = verify_visual_grounding(vlm.output)
     safety = check_safety(command, visual_verification)
     return success_envelope(
         transcript=transcript,
@@ -84,37 +97,3 @@ def run_verification(
         visual_verification=visual_verification,
         safety=safety,
     )
-
-
-def _require_matching_commands(
-    requested_command: TaskCommand,
-    vlm_command: TaskCommand,
-) -> TaskCommand:
-    if requested_command.action != vlm_command.action:
-        raise ValidationError(
-            code="command_mismatch",
-            message="VLM command action does not match the user transcript.",
-            details={
-                "requested_action": requested_command.action,
-                "vlm_action": vlm_command.action,
-            },
-        )
-    if requested_command.object != vlm_command.object:
-        raise ValidationError(
-            code="command_mismatch",
-            message="VLM command object does not match the user transcript.",
-            details={
-                "requested_object": requested_command.object,
-                "vlm_object": vlm_command.object,
-            },
-        )
-    if requested_command.destination != vlm_command.destination:
-        raise ValidationError(
-            code="command_mismatch",
-            message="VLM command destination does not match the user transcript.",
-            details={
-                "requested_destination": requested_command.destination,
-                "vlm_destination": vlm_command.destination,
-            },
-        )
-    return requested_command

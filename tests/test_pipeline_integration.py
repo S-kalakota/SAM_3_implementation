@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from co_bot_vlm.errors import ValidationError
 from co_bot_vlm.image_source import ImageFrame
-from co_bot_vlm.pipeline import run_live_pipeline, run_pipeline
+from co_bot_vlm.pipeline import run_live_pipeline, run_pipeline, run_verification
 from co_bot_vlm.transcript import Transcript
 from co_bot_vlm.vlm import build_vlm_response
 
@@ -41,6 +41,8 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(envelope["input"]["image"]["height"], 600)
         self.assertEqual(envelope["vlm"]["backend"], "mock")
         self.assertEqual(envelope["vlm"]["output"]["image_size"], [800, 600])
+        self.assertEqual(envelope["intent"]["object"], "red cup")
+        self.assertEqual(envelope["vlm"]["grounding_request"]["object"], "red cup")
 
     def test_pipeline_output_has_no_fake_perception(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -90,16 +92,36 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(envelope["next"]["status"], "ready_for_later_phase")
 
     def test_pipeline_blocked_by_visual_safety(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            image = Path(tmpdir) / "frame.png"
-            image.write_bytes(minimal_png())
+        class MissingObjectBackend:
+            name = "missing-object"
+            model = "test"
 
-            envelope = run_pipeline(
-                text="pick up the red cup that is not visible to the drop zone",
-                image_file=image,
-                camera_index=None,
-                vlm_backend="mock",
-            )
+            def ground(self, command, image: ImageFrame):
+                return build_vlm_response(
+                    backend=self.name,
+                    model=self.model,
+                    payload={
+                        "object": command.object,
+                        "visible": False,
+                        "confidence": 0.0,
+                        "bbox_xyxy": None,
+                        "image_size": [640, 480],
+                    },
+                )
+
+        envelope = run_verification(
+            transcript=Transcript(
+                text="pick up the red cup to the drop zone",
+                source="text",
+            ),
+            image=ImageFrame(
+                source_type="image_file",
+                path="/tmp/frame.png",
+                width=640,
+                height=480,
+            ),
+            backend=MissingObjectBackend(),
+        )
 
         self.assertFalse(envelope["visual_verification"]["approved"])
         self.assertFalse(envelope["safety"]["approved"])
@@ -107,6 +129,87 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertIn("blocked by safety", envelope["safety"]["reason"])
         self.assertIn("blocked by safety", envelope["next"]["description"])
         self.assertEqual(envelope["next"]["status"], "blocked_by_safety")
+
+    def test_pipeline_blocks_when_grounded_object_differs_from_intent(self) -> None:
+        class WrongObjectBackend:
+            name = "wrong-object"
+            model = "test"
+
+            def ground(self, command, image: ImageFrame):
+                return build_vlm_response(
+                    backend=self.name,
+                    model=self.model,
+                    payload={
+                        "object": "green bottle",
+                        "visible": True,
+                        "confidence": 0.95,
+                        "bbox_xyxy": [0, 10, 100, 200],
+                        "image_size": [640, 480],
+                    },
+                )
+
+        envelope = run_verification(
+            transcript=Transcript(
+                text="pick up the blue box to the drop zone",
+                source="text",
+            ),
+            image=ImageFrame(
+                source_type="image_file",
+                path="/tmp/frame.png",
+                width=640,
+                height=480,
+            ),
+            backend=WrongObjectBackend(),
+        )
+
+        self.assertFalse(envelope["safety"]["approved"])
+        self.assertIn(
+            "grounded object and command object differ",
+            envelope["safety"]["reason"],
+        )
+
+    def test_pipeline_sends_parsed_intent_to_grounding_backend(self) -> None:
+        class CapturingBackend:
+            name = "capturing"
+            model = "test"
+
+            def __init__(self) -> None:
+                self.command = None
+
+            def ground(self, command, image: ImageFrame):
+                self.command = command
+                return build_vlm_response(
+                    backend=self.name,
+                    model=self.model,
+                    payload={
+                        "object": command.object,
+                        "visible": True,
+                        "confidence": 0.95,
+                        "bbox_xyxy": [0, 10, 100, 200],
+                        "image_size": [640, 480],
+                    },
+                )
+
+        backend = CapturingBackend()
+        envelope = run_verification(
+            transcript=Transcript(
+                text="put the blue box from the left bin into the right bin",
+                source="text",
+            ),
+            image=ImageFrame(
+                source_type="image_file",
+                path="/tmp/frame.png",
+                width=640,
+                height=480,
+            ),
+            backend=backend,
+        )
+
+        self.assertEqual(backend.command.object, "blue box")
+        self.assertEqual(backend.command.source, "left bin")
+        self.assertEqual(backend.command.destination, "right bin")
+        self.assertEqual(envelope["intent"]["source"], "left bin")
+        self.assertEqual(envelope["intent"]["destination"], "right bin")
 
     def test_pipeline_accepts_blue_box(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,7 +224,7 @@ class PipelineIntegrationTests(unittest.TestCase):
             )
 
         self.assertTrue(envelope["safety"]["approved"])
-        self.assertEqual(envelope["vlm"]["command"]["object"], "blue box")
+        self.assertEqual(envelope["intent"]["object"], "blue box")
         self.assertEqual(envelope["vlm"]["output"]["object"], "blue box")
 
     def test_pipeline_rejects_blue_cube(self) -> None:
@@ -144,14 +247,12 @@ class PipelineIntegrationTests(unittest.TestCase):
             name = "rewriting"
             model = "test"
 
-            def analyze(self, transcript: Transcript, image: ImageFrame):
+            def ground(self, command, image: ImageFrame):
                 return build_vlm_response(
                     backend=self.name,
                     model=self.model,
                     payload={
-                        "action": "pick_and_place",
                         "object": "blue box",
-                        "destination": "drop zone",
                         "visible": True,
                         "confidence": 0.95,
                         "bbox_xyxy": [0, 10, 100, 200],
@@ -171,8 +272,6 @@ class PipelineIntegrationTests(unittest.TestCase):
         )
 
         with self.assertRaises(ValidationError) as context:
-            from co_bot_vlm.pipeline import run_verification
-
             run_verification(
                 transcript=transcript,
                 image=image,
@@ -207,7 +306,7 @@ class PipelineIntegrationTests(unittest.TestCase):
 
         self.assertEqual(envelope["input"]["transcript"]["source"], "voice")
         self.assertEqual(envelope["input"]["transcript"]["metadata"]["backend"], "whisper")
-        self.assertEqual(envelope["vlm"]["command"]["object"], "blue box")
+        self.assertEqual(envelope["intent"]["object"], "blue box")
 
     def test_live_camera_pipeline_yields_bounded_frames(self) -> None:
         frames = [
@@ -242,7 +341,7 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(envelopes[0]["input"]["image"]["source_type"], "camera")
         self.assertEqual(envelopes[0]["input"]["image"]["metadata"]["frame_number"], 1)
         self.assertEqual(envelopes[1]["input"]["image"]["metadata"]["frame_number"], 2)
-        self.assertEqual(envelopes[0]["vlm"]["command"]["object"], "green bottle")
+        self.assertEqual(envelopes[0]["intent"]["object"], "green bottle")
 
 
 if __name__ == "__main__":

@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import unittest
 
+from co_bot_vlm.command import parse_transcript_command
 from co_bot_vlm.errors import ValidationError
 from co_bot_vlm.image_source import ImageFrame
-from co_bot_vlm.transcript import Transcript
 from co_bot_vlm.vlm import (
     MockVLMBackend,
     VLM_SCHEMA_VERSION,
+    build_vlm_prompt,
     build_vlm_response_from_text,
     parse_vlm_json_output,
     validate_vlm_output,
@@ -17,9 +18,7 @@ from co_bot_vlm.vlm import (
 
 def vlm_payload(**overrides):
     values = {
-        "action": "pick_and_place",
         "object": "red cup",
-        "destination": "drop zone",
         "visible": True,
         "confidence": 0.86,
         "bbox_xyxy": [280, 190, 360, 310],
@@ -35,7 +34,6 @@ class VLMAdapterTests(unittest.TestCase):
 
         result = validate_vlm_output(parse_vlm_json_output(raw_output))
 
-        self.assertEqual(result.command.object, "red cup")
         self.assertIsNotNone(result.grounding)
         self.assertEqual(result.grounding.object, "red cup")
         self.assertEqual(result.payload["bbox_xyxy"], [280, 190, 360, 310])
@@ -43,7 +41,6 @@ class VLMAdapterTests(unittest.TestCase):
     def test_vlm_accepts_blue_box(self) -> None:
         result = validate_vlm_output(vlm_payload(object="blue box"))
 
-        self.assertEqual(result.command.object, "blue box")
         self.assertEqual(result.grounding.object, "blue box")
         self.assertEqual(result.payload["object"], "blue box")
 
@@ -88,6 +85,22 @@ class VLMAdapterTests(unittest.TestCase):
 
         self.assertEqual(response.output["image_size"], [1280, 720])
 
+    def test_vlm_accepts_not_visible_without_bbox(self) -> None:
+        result = validate_vlm_output(
+            vlm_payload(visible=False, confidence=0.0, bbox_xyxy=None)
+        )
+
+        self.assertFalse(result.grounding.visible)
+        self.assertIsNone(result.grounding.bbox_xyxy)
+
+    def test_vlm_ignores_bbox_when_not_visible(self) -> None:
+        result = validate_vlm_output(
+            vlm_payload(visible=False, confidence=0.0, bbox_xyxy=[0, 0, 0, 0])
+        )
+
+        self.assertFalse(result.grounding.visible)
+        self.assertIsNone(result.grounding.bbox_xyxy)
+
     def test_vlm_rejects_invalid_bbox(self) -> None:
         with self.assertRaises(ValidationError) as context:
             validate_vlm_output(vlm_payload(bbox_xyxy=[280, 190, 2000, 310]))
@@ -101,11 +114,30 @@ class VLMAdapterTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "motion_fields_rejected")
         self.assertEqual(context.exception.details["blocked_fields"], ["robot_command"])
 
+    def test_vlm_rejects_command_fields(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            validate_vlm_output(
+                vlm_payload(action="pick_and_place", destination="drop zone")
+            )
+
+        self.assertEqual(context.exception.code, "vlm_unexpected_fields")
+        self.assertEqual(context.exception.details["unexpected"], ["action", "destination"])
+
     def test_vlm_rejects_non_json(self) -> None:
         with self.assertRaises(ValidationError) as context:
-            parse_vlm_json_output('Here is the result: {"action":"pick_and_place"}')
+            parse_vlm_json_output("The requested object is visible.")
 
         self.assertEqual(context.exception.code, "vlm_output_not_json")
+        self.assertIn("raw_preview", context.exception.details)
+
+    def test_vlm_accepts_json_object_inside_prose_or_code_fence(self) -> None:
+        payload = parse_vlm_json_output(
+            "Here is the grounding:\n```json\n"
+            + json.dumps(vlm_payload(object="blue box"))
+            + "\n```"
+        )
+
+        self.assertEqual(payload["object"], "blue box")
 
     def test_vlm_accepts_first_json_object_with_trailing_model_output(self) -> None:
         payload = parse_vlm_json_output(
@@ -114,7 +146,6 @@ class VLMAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["object"], "blue box")
-        self.assertEqual(payload["action"], "pick_and_place")
 
     def test_vlm_rejects_non_standard_json_constant(self) -> None:
         with self.assertRaises(ValidationError) as context:
@@ -123,8 +154,8 @@ class VLMAdapterTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "vlm_output_not_json")
 
     def test_mock_backend_records_backend_model_and_schema_metadata(self) -> None:
-        response = MockVLMBackend().analyze(
-            Transcript(text="pick up the cup to the drop zone", source="text"),
+        response = MockVLMBackend().ground(
+            parse_transcript_command("pick up the cup to the drop zone"),
             ImageFrame(
                 source_type="image_file",
                 path="/tmp/frame.png",
@@ -138,6 +169,13 @@ class VLMAdapterTests(unittest.TestCase):
         self.assertEqual(response.output["object"], "red cup")
         self.assertEqual(response.metadata["schema_version"], VLM_SCHEMA_VERSION)
         self.assertTrue(response.metadata["motion_control_fields_rejected"])
+
+    def test_vlm_prompt_is_grounding_only(self) -> None:
+        prompt = build_vlm_prompt("blue box", [1024, 768])
+
+        self.assertIn("Requested target object: blue box", prompt)
+        self.assertIn("Do not parse, rewrite, approve, or describe the robot command", prompt)
+        self.assertIn("Do not include action, destination, source", prompt)
 
 
 if __name__ == "__main__":

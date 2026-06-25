@@ -1,4 +1,4 @@
-"""Command parsing boundary for VLM task output."""
+"""Command parsing boundary for transcript-derived task intent."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ class TaskCommand:
     action: str
     object: str | None = None
     destination: str | None = None
+    source: str | None = None
 
 
 SUPPORTED_OBJECT_ALIASES = {
@@ -51,6 +52,7 @@ def parse_vla_output(payload: dict[str, Any]) -> TaskCommand:
         )
 
     object_name = str(payload["object"]).strip()
+    source = str(payload["source"]).strip() if payload.get("source") else None
     destination = str(payload["destination"]).strip()
 
     if action != "pick_and_place":
@@ -60,7 +62,12 @@ def parse_vla_output(payload: dict[str, Any]) -> TaskCommand:
             details={"action": action},
         )
 
-    return TaskCommand(action=action, object=object_name, destination=destination)
+    return TaskCommand(
+        action=action,
+        object=object_name,
+        destination=destination,
+        source=source,
+    )
 
 
 def parse_transcript_command(text: str) -> TaskCommand:
@@ -86,10 +93,12 @@ def parse_transcript_command(text: str) -> TaskCommand:
         )
 
     destination = _extract_destination(normalized)
+    source = _extract_source(normalized)
     return TaskCommand(
         action="pick_and_place",
         object=object_name,
         destination=destination,
+        source=source,
     )
 
 
@@ -106,12 +115,19 @@ def _extract_supported_object(text: str) -> str | None:
 
 def _extract_requested_object(text: str) -> str:
     match = re.search(
-        r"\b(?:pick up|pick|grab|move)\s+(?:the\s+|a\s+|an\s+)?(.+?)(?:\s+(?:to|into|onto)\b|$)",
+        r"\b(?:pick up|pick|grab|move|put|place)\s+(?:the\s+|a\s+|an\s+)?(.+?)(?:\s+(?:from|to|into|onto)\b|$)",
         text,
     )
     if match:
         return match.group(1).strip().rstrip(".")
     return "requested object"
+
+
+def _extract_source(text: str) -> str | None:
+    match = re.search(r"\bfrom\s+(?:the\s+)?(.+?)(?:\s+(?:to|into|onto)\b|$)", text)
+    if match:
+        return match.group(1).strip().rstrip(".")
+    return None
 
 
 def _extract_destination(text: str) -> str:

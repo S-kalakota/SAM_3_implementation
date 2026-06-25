@@ -48,7 +48,7 @@ class VisualSafetyTests(unittest.TestCase):
         )
 
         self.assertFalse(decision.approved)
-        self.assertIn("object and command object differ", decision.reason)
+        self.assertIn("grounded object and command object differ", decision.reason)
 
     def test_low_confidence_rejected(self) -> None:
         verification = check_visual_grounding(grounding(confidence=0.79))

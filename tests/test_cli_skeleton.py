@@ -59,6 +59,7 @@ class CliSkeletonTests(unittest.TestCase):
         self.assertTrue(envelope["safety"]["approved"])
         self.assertEqual(envelope["vlm"]["backend"], "mock")
         self.assertEqual(envelope["vlm"]["output"]["image_size"], [640, 480])
+        self.assertEqual(envelope["intent"]["object"], "red cup")
         self.assertNotIn("object_pose", json.dumps(envelope))
         self.assertNotIn("joint_angles", json.dumps(envelope))
 
@@ -118,9 +119,10 @@ class CliSkeletonTests(unittest.TestCase):
         envelope = json.loads(result.stdout)
         self.assertEqual(
             set(envelope),
-            {"input", "vlm", "visual_verification", "safety", "next"},
+            {"input", "intent", "vlm", "visual_verification", "safety", "next"},
         )
-        self.assertEqual(envelope["vlm"]["command"]["object"], "blue box")
+        self.assertEqual(envelope["intent"]["object"], "blue box")
+        self.assertEqual(envelope["vlm"]["grounding_request"]["object"], "blue box")
         self.assertEqual(envelope["next"]["status"], "ready_for_later_phase")
 
 

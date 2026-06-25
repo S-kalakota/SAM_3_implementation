@@ -43,6 +43,6 @@ def check_verified_command(
 
     grounded_object = grounding.object
     if grounded_object.strip().lower() != command.object.strip().lower():
-        return SafetyDecision(False, "blocked by safety: VLM object and command object differ")
+        return SafetyDecision(False, "blocked by safety: grounded object and command object differ")
 
     return SafetyDecision(True, "command is valid and object visually verified")

@@ -1,10 +1,42 @@
 # Co-Bot VLM
 
-Lightweight skeleton for a VLM-based object existence verification pipeline.
+Lightweight skeleton for a voice/text to visual-grounding verification pipeline.
 
-This phase verifies that a requested object is visually present in a single RGB
-image. It does not produce robot poses, joint angles, gripper commands,
-trajectories, or motion commands.
+This phase transcribes or accepts a command, parses a structured intent, then
+asks the VLM only to ground the requested target object in a single RGB image.
+It does not produce robot poses, joint angles, gripper commands, trajectories,
+or motion commands.
+
+## Current Flow
+
+1. `Whisper` or `--text` produces a transcript string.
+2. The instruction parser checks the transcript against the current safety
+   object allow-list and extracts intent:
+
+   ```json
+   {
+     "action": "pick_and_place",
+     "object": "blue box",
+     "source": "left bin",
+     "destination": "right bin"
+   }
+   ```
+
+3. The Qwen/mock VLM receives only the parsed target object and RGB image. It
+   returns visual grounding evidence:
+
+   ```json
+   {
+     "object": "blue box",
+     "visible": true,
+     "confidence": 0.95,
+     "bbox_xyxy": [0, 173, 792, 652],
+     "image_size": [1024, 768]
+   }
+   ```
+
+4. Safety approves only when the parsed intent target and grounded object match,
+   the object is visible, confidence is high enough, and the box is valid.
 
 ## Current Safety Guidelines
 
@@ -22,9 +54,14 @@ Visual approval requires:
 - object is marked visible;
 - confidence is at least `0.80`;
 - bounding box is inside the image bounds;
-- VLM object matches the parsed command object after alias normalization.
+- grounded object matches the parsed command object after alias normalization.
 
 Unsupported objects, such as `orange object`, are blocked.
+
+The VLM grounding schema is `object-grounding-v1`. Qwen output with
+`action`, `source`, `destination`, robot poses, trajectories, gripper commands,
+or other motion fields is rejected because those belong to later robot-control
+stages.
 
 ## Run
 
@@ -93,8 +130,8 @@ PY
 ```
 
 Then run with `--voice`. The command records for `--voice-duration` seconds,
-transcribes the microphone audio with Whisper, and sends the transcript into the
-same image/VLM pipeline:
+transcribes the microphone audio with Whisper, parses the intent, and sends only
+the requested target object into the same image/VLM grounding pipeline:
 
 ```bash
 .venv/bin/co-bot-vlm --voice --voice-duration 5 --vlm-backend qwen --image-file path/to/frame.jpg --pretty

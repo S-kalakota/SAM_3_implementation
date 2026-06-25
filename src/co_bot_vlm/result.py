@@ -14,7 +14,7 @@ from .visual_grounding import VisualVerification
 from .vlm import VLMResponse
 
 
-TOP_LEVEL_KEYS = ("input", "vlm", "visual_verification", "safety", "next")
+TOP_LEVEL_KEYS = ("input", "intent", "vlm", "visual_verification", "safety", "next")
 
 
 def success_envelope(
@@ -37,12 +37,16 @@ def success_envelope(
             "transcript": asdict(transcript),
             "image": image.to_public_dict(),
         },
+        "intent": asdict(command),
         "vlm": {
             "backend": vlm.backend,
             "model": vlm.model,
+            "grounding_request": {
+                "object": command.object,
+                "image_source_type": image.source_type,
+            },
             "output": vlm.output,
             "metadata": vlm.metadata,
-            "command": asdict(command),
         },
         "visual_verification": asdict(visual_verification),
         "safety": asdict(safety),
@@ -56,6 +60,7 @@ def success_envelope(
 def error_envelope(error: PipelineError) -> dict[str, Any]:
     return {
         "input": {},
+        "intent": {},
         "vlm": {},
         "visual_verification": {},
         "safety": {
