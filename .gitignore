@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Large/gated model artifacts
+checkpoints/
+*.pt
+*.pth
+*.safetensors
+
+# Cloned upstream source used for local installation
+third_party/
