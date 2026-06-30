@@ -9,5 +9,8 @@ checkpoints/
 *.pth
 *.safetensors
 
+# Generated inference artifacts
+outputs/
+
 # Cloned upstream source used for local installation
 third_party/
