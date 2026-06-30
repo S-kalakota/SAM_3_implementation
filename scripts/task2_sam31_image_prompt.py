@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task 2 smoke test: prompt SAM 3.1 on one saved image."""
+"""Task 2/3 smoke test: prompt SAM 3.1 and optionally gate detections."""
 
 from __future__ import annotations
 
@@ -18,12 +18,15 @@ from sam3.model_builder import build_sam3_multiplex_video_predictor
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "checkpoints/sam3.1/sam3.1_multiplex.pt"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/task2_sam31_image_prompt.json"
+DEFAULT_PRESENCE_CONF_THRESH = 0.5
+DEFAULT_MIN_AREA = 500
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run SAM 3.1 on a saved image with a typed text prompt."
-    )
+def parse_args(
+    description: str = "Run SAM 3.1 on a saved image with a typed text prompt.",
+    default_output: Path = DEFAULT_OUTPUT,
+) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "--image",
         required=True,
@@ -49,9 +52,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-json",
-        default=DEFAULT_OUTPUT,
+        default=default_output,
         type=Path,
         help="Where to write the compact result summary.",
+    )
+    parser.add_argument(
+        "--presence-conf-threshold",
+        default=DEFAULT_PRESENCE_CONF_THRESH,
+        type=float,
+        help="Task 3 gate: drop masks with scores at or below this value.",
+    )
+    parser.add_argument(
+        "--min-area",
+        default=DEFAULT_MIN_AREA,
+        type=int,
+        help="Task 3 gate: drop masks with pixel area at or below this value.",
     )
     parser.add_argument(
         "--det-threshold",
@@ -72,11 +87,103 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def to_numpy_array(value: object) -> np.ndarray:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def masks_to_bool_array(masks: object, threshold: float = 0.5) -> np.ndarray:
+    masks_np = to_numpy_array(masks)
+    if masks_np.size == 0:
+        if masks_np.ndim >= 3:
+            shape = (masks_np.shape[0], masks_np.shape[-2], masks_np.shape[-1])
+            return np.zeros(shape, dtype=bool)
+        return np.zeros((0, 0, 0), dtype=bool)
+
+    if masks_np.ndim == 2:
+        masks_np = masks_np[None, :, :]
+    elif masks_np.ndim == 4 and masks_np.shape[1] == 1:
+        masks_np = masks_np[:, 0, :, :]
+    elif masks_np.ndim > 3:
+        masks_np = np.squeeze(masks_np)
+        if masks_np.ndim == 2:
+            masks_np = masks_np[None, :, :]
+
+    if masks_np.ndim != 3:
+        raise ValueError(f"Expected masks shaped as NxHxW, got {masks_np.shape}")
+
+    return masks_np > threshold
+
+
+def gate_masks(
+    masks: object,
+    scores: object,
+    conf_thresh: float = DEFAULT_PRESENCE_CONF_THRESH,
+    min_area: int = DEFAULT_MIN_AREA,
+) -> tuple[list[tuple[np.ndarray, float]], list[dict]]:
+    bool_masks = masks_to_bool_array(masks)
+    scores_np = to_numpy_array(scores).astype(np.float32, copy=False).reshape(-1)
+
+    kept = []
+    candidates = []
+    for idx, mask in enumerate(bool_masks):
+        score = float(scores_np[idx]) if idx < scores_np.size else 0.0
+        area = int(mask.sum())
+        reject_reasons = []
+        if score <= conf_thresh:
+            reject_reasons.append("low_score")
+        if area <= min_area:
+            reject_reasons.append("small_area")
+
+        candidate = {
+            "index": idx,
+            "score": score,
+            "area_pixels": area,
+            "kept": len(reject_reasons) == 0,
+            "reject_reasons": reject_reasons,
+        }
+        candidates.append(candidate)
+        if candidate["kept"]:
+            kept.append((mask, score))
+
+    return kept, candidates
+
+
+def summarize_presence_gate(
+    outputs: dict,
+    conf_thresh: float = DEFAULT_PRESENCE_CONF_THRESH,
+    min_area: int = DEFAULT_MIN_AREA,
+) -> dict:
+    kept, candidates = gate_masks(
+        outputs["out_binary_masks"],
+        outputs.get("out_probs", []),
+        conf_thresh=conf_thresh,
+        min_area=min_area,
+    )
+    kept_candidates = [candidate for candidate in candidates if candidate["kept"]]
+    rejected_candidates = [
+        candidate for candidate in candidates if not candidate["kept"]
+    ]
+    return {
+        "conf_threshold": float(conf_thresh),
+        "min_area_pixels": int(min_area),
+        "num_candidates": len(candidates),
+        "num_kept": len(kept),
+        "kept_indices": [candidate["index"] for candidate in kept_candidates],
+        "kept_scores": [candidate["score"] for candidate in kept_candidates],
+        "kept_areas_pixels": [
+            candidate["area_pixels"] for candidate in kept_candidates
+        ],
+        "rejected": rejected_candidates,
+    }
+
+
 def summarize_outputs(outputs: dict) -> dict:
-    obj_ids = np.asarray(outputs["out_obj_ids"])
-    scores = np.asarray(outputs.get("out_probs", []), dtype=np.float32)
-    boxes_xywh = np.asarray(outputs["out_boxes_xywh"], dtype=np.float32)
-    masks = np.asarray(outputs["out_binary_masks"], dtype=bool)
+    obj_ids = to_numpy_array(outputs["out_obj_ids"])
+    scores = to_numpy_array(outputs.get("out_probs", [])).astype(np.float32, copy=False)
+    boxes_xywh = to_numpy_array(outputs["out_boxes_xywh"]).astype(np.float32, copy=False)
+    masks = masks_to_bool_array(outputs["out_binary_masks"])
 
     height, width = masks.shape[-2:] if masks.ndim == 3 else (0, 0)
     if masks.shape[0] == 0:
@@ -110,6 +217,8 @@ def run_once(args: argparse.Namespace) -> dict:
     print(f"prompt={args.prompt!r}")
     print(f"checkpoint={checkpoint_path}")
     print(f"threshold={args.threshold:.3f}")
+    print(f"presence_conf_threshold={args.presence_conf_threshold:.3f}")
+    print(f"min_area={args.min_area}")
     if args.det_threshold is not None:
         print(f"det_threshold={args.det_threshold:.3f}")
 
@@ -148,6 +257,11 @@ def run_once(args: argparse.Namespace) -> dict:
                 output_prob_thresh=args.threshold,
             )
         summary = summarize_outputs(outputs)
+        presence_gate = summarize_presence_gate(
+            outputs,
+            conf_thresh=args.presence_conf_threshold,
+            min_area=args.min_area,
+        )
     finally:
         if "inference_state" in locals():
             del inference_state
@@ -161,19 +275,28 @@ def run_once(args: argparse.Namespace) -> dict:
         "checkpoint": str(checkpoint_path),
         "threshold": args.threshold,
         "det_threshold": args.det_threshold,
+        "presence_gate": presence_gate,
         **summary,
     }
     return result
 
 
-def main() -> None:
-    args = parse_args()
+def main(
+    description: str = "Run SAM 3.1 on a saved image with a typed text prompt.",
+    default_output: Path = DEFAULT_OUTPUT,
+) -> None:
+    args = parse_args(description=description, default_output=default_output)
     result = run_once(args)
 
     print(f"num_masks={result['num_masks']}")
     print(f"scores={result['scores']}")
     print(f"mask_areas_pixels={result['mask_areas_pixels']}")
     print(f"boxes_xywh_normalized={result['boxes_xywh_normalized']}")
+    gate_summary = result["presence_gate"]
+    print(f"kept={gate_summary['num_kept']}")
+    print(f"kept_scores={gate_summary['kept_scores']}")
+    print(f"kept_areas_pixels={gate_summary['kept_areas_pixels']}")
+    print(f"rejected={gate_summary['rejected']}")
 
     output_path = args.output_json.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
