@@ -19,8 +19,8 @@ from sam3.model_builder import build_sam3_multiplex_video_predictor
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "checkpoints/sam3.1/sam3.1_multiplex.pt"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/task2_sam31_image_prompt.json"
-DEFAULT_PRESENCE_CONF_THRESH = 0.5
-DEFAULT_MIN_AREA = 500
+DEFAULT_PRESENCE_CONF_THRESH = 0.25
+DEFAULT_MIN_AREA = 250
 
 
 def parse_args(
@@ -48,7 +48,7 @@ def parse_args(
     )
     parser.add_argument(
         "--threshold",
-        default=0.5,
+        default=0.05,
         type=float,
         help="SAM output probability threshold.",
     )

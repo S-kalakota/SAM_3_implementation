@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt",
-        default="bottle",
+        default="green object",
         help="Text prompt to send to SAM 3.1 after grabbing the live frame.",
     )
     parser.add_argument(
@@ -96,19 +96,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--threshold",
-        default=0.1,
+        default=0.05,
         type=float,
         help="SAM output probability threshold.",
     )
     parser.add_argument(
         "--presence-conf-threshold",
-        default=0.5,
+        default=0.25,
         type=float,
         help="Presence gate: drop masks with scores at or below this value.",
     )
     parser.add_argument(
         "--min-area",
-        default=500,
+        default=250,
         type=int,
         help="Presence gate: drop masks with pixel area at or below this value.",
     )
