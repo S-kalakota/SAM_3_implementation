@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task 2/3 smoke test: prompt SAM 3.1 and optionally gate detections."""
+"""Task 2/3/4 smoke test: prompt SAM 3.1, gate detections, and draw overlays."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import io
 import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -25,6 +26,7 @@ DEFAULT_MIN_AREA = 500
 def parse_args(
     description: str = "Run SAM 3.1 on a saved image with a typed text prompt.",
     default_output: Path = DEFAULT_OUTPUT,
+    default_overlay_output: Path | None = None,
 ) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
@@ -67,6 +69,12 @@ def parse_args(
         default=DEFAULT_MIN_AREA,
         type=int,
         help="Task 3 gate: drop masks with pixel area at or below this value.",
+    )
+    parser.add_argument(
+        "--overlay-output",
+        default=default_overlay_output,
+        type=Path,
+        help="Task 4: where to write the overlay image. Omit to skip.",
     )
     parser.add_argument(
         "--det-threshold",
@@ -202,6 +210,58 @@ def summarize_outputs(outputs: dict) -> dict:
     }
 
 
+def overlay_masks(
+    rgb_np: np.ndarray,
+    kept: list[tuple[np.ndarray, float]],
+    label: str,
+    output_path: Path,
+) -> dict:
+    out = rgb_np.copy()
+    overlay_color = np.array([0, 255, 0], dtype=np.float32)
+
+    for mask, score in kept:
+        if mask.shape != out.shape[:2]:
+            raise ValueError(
+                f"Mask shape {mask.shape} does not match image shape {out.shape[:2]}"
+            )
+        if not mask.any():
+            continue
+
+        out[mask] = (0.5 * out[mask] + 0.5 * overlay_color).astype(np.uint8)
+        ys, xs = np.where(mask)
+        origin = (int(xs.min()), max(int(ys.min()) - 8, 14))
+        text = f"{label} {score:.2f}"
+        cv2.putText(
+            out,
+            text,
+            origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 0),
+            4,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            out,
+            text,
+            origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output_path), out[:, :, ::-1]):
+        raise OSError(f"Failed to write overlay image: {output_path}")
+
+    return {
+        "output": str(output_path),
+        "num_masks_drawn": int(len(kept)),
+    }
+
+
 def run_once(args: argparse.Namespace) -> dict:
     image_path = args.image.expanduser().resolve()
     checkpoint_path = args.checkpoint.expanduser().resolve()
@@ -262,6 +322,20 @@ def run_once(args: argparse.Namespace) -> dict:
             conf_thresh=args.presence_conf_threshold,
             min_area=args.min_area,
         )
+        overlay = None
+        if args.overlay_output is not None:
+            kept, _ = gate_masks(
+                outputs["out_binary_masks"],
+                outputs.get("out_probs", []),
+                conf_thresh=args.presence_conf_threshold,
+                min_area=args.min_area,
+            )
+            overlay = overlay_masks(
+                np.asarray(image, dtype=np.uint8)[:, :, :3],
+                kept,
+                args.prompt,
+                args.overlay_output.expanduser().resolve(),
+            )
     finally:
         if "inference_state" in locals():
             del inference_state
@@ -276,6 +350,7 @@ def run_once(args: argparse.Namespace) -> dict:
         "threshold": args.threshold,
         "det_threshold": args.det_threshold,
         "presence_gate": presence_gate,
+        "overlay": overlay,
         **summary,
     }
     return result
@@ -284,8 +359,13 @@ def run_once(args: argparse.Namespace) -> dict:
 def main(
     description: str = "Run SAM 3.1 on a saved image with a typed text prompt.",
     default_output: Path = DEFAULT_OUTPUT,
+    default_overlay_output: Path | None = None,
 ) -> None:
-    args = parse_args(description=description, default_output=default_output)
+    args = parse_args(
+        description=description,
+        default_output=default_output,
+        default_overlay_output=default_overlay_output,
+    )
     result = run_once(args)
 
     print(f"num_masks={result['num_masks']}")
@@ -297,6 +377,9 @@ def main(
     print(f"kept_scores={gate_summary['kept_scores']}")
     print(f"kept_areas_pixels={gate_summary['kept_areas_pixels']}")
     print(f"rejected={gate_summary['rejected']}")
+    if result["overlay"] is not None:
+        print(f"overlay_masks_drawn={result['overlay']['num_masks_drawn']}")
+        print(f"wrote_overlay={result['overlay']['output']}")
 
     output_path = args.output_json.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
