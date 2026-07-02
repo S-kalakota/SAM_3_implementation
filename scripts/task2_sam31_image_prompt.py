@@ -262,7 +262,7 @@ def overlay_masks(
     }
 
 
-def run_once(args: argparse.Namespace) -> dict:
+def run_once(args: argparse.Namespace, include_kept_masks: bool = False) -> dict:
     image_path = args.image.expanduser().resolve()
     checkpoint_path = args.checkpoint.expanduser().resolve()
 
@@ -322,17 +322,19 @@ def run_once(args: argparse.Namespace) -> dict:
             conf_thresh=args.presence_conf_threshold,
             min_area=args.min_area,
         )
-        overlay = None
-        if args.overlay_output is not None:
+        kept = None
+        if args.overlay_output is not None or include_kept_masks:
             kept, _ = gate_masks(
                 outputs["out_binary_masks"],
                 outputs.get("out_probs", []),
                 conf_thresh=args.presence_conf_threshold,
                 min_area=args.min_area,
             )
+        overlay = None
+        if args.overlay_output is not None:
             overlay = overlay_masks(
                 np.asarray(image, dtype=np.uint8)[:, :, :3],
-                kept,
+                kept or [],
                 args.prompt,
                 args.overlay_output.expanduser().resolve(),
             )
@@ -353,6 +355,8 @@ def run_once(args: argparse.Namespace) -> dict:
         "overlay": overlay,
         **summary,
     }
+    if include_kept_masks:
+        result["_kept_masks"] = kept or []
     return result
 
 

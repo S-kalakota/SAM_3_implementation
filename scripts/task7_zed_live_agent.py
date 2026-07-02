@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import local_qwen
 import task2_sam31_image_prompt as task2
 import task5_zed_live_prompt as task5
@@ -19,8 +20,10 @@ import task6_sam31_agent as task6
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FRAME_OUTPUT = PROJECT_ROOT / "outputs/task7_live_agent_frame.png"
+DEFAULT_STEREO_FRAME_OUTPUT = PROJECT_ROOT / "outputs/task7_live_agent_frame_stereo.png"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/task7_zed_live_agent.json"
 DEFAULT_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live_agent.png"
+DEFAULT_STEREO_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live_agent_stereo.png"
 DEFAULT_AGENT_RENDER_OUTPUT = PROJECT_ROOT / "outputs/result_live_agent_meta.png"
 DEFAULT_AGENT_OUTPUT_DIR = PROJECT_ROOT / "outputs/task7_live_agent_workspace"
 DEFAULT_LOOP_OUTPUT_ROOT = PROJECT_ROOT / "outputs/task7_live_agent_loop"
@@ -56,8 +59,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Where to save the live RGB frame before the agent runs.",
     )
+    parser.add_argument(
+        "--stereo-frame-output",
+        default=DEFAULT_STEREO_FRAME_OUTPUT,
+        type=Path,
+        help="Where to save the opposite-view RGB frame when --stereo-warp-mask is set.",
+    )
     parser.add_argument("--output-json", default=DEFAULT_OUTPUT, type=Path)
     parser.add_argument("--overlay-output", default=DEFAULT_OVERLAY_OUTPUT, type=Path)
+    parser.add_argument("--stereo-overlay-output", default=DEFAULT_STEREO_OVERLAY_OUTPUT, type=Path)
     parser.add_argument("--agent-render-output", default=DEFAULT_AGENT_RENDER_OUTPUT, type=Path)
     parser.add_argument("--agent-output-dir", default=DEFAULT_AGENT_OUTPUT_DIR, type=Path)
     parser.add_argument("--checkpoint", default=task6.DEFAULT_CHECKPOINT, type=Path)
@@ -78,6 +88,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resolution", default="HD720", choices=task5.RESOLUTION_NAMES)
     parser.add_argument("--camera-fps", default=30, type=int)
     parser.add_argument("--view", default="LEFT", choices=task5.VIEW_NAMES)
+    parser.add_argument(
+        "--stereo-warp-mask",
+        action="store_true",
+        help=(
+            "Retrieve the opposite ZED view and write a second overlay by "
+            "warping the kept masks with ZED disparity instead of rerunning SAM."
+        ),
+    )
+    parser.add_argument(
+        "--stereo-cleanup-kernel",
+        default=3,
+        type=int,
+        help="Odd morphology kernel used to close small holes in warped stereo masks. Use 1 to disable.",
+    )
+    parser.add_argument(
+        "--stereo-disparity-sign",
+        default=None,
+        type=int,
+        choices=(-1, 1),
+        help="Override disparity shift sign if the warped mask moves the wrong way.",
+    )
     parser.add_argument("--warmup-frames", default=5, type=int)
     parser.add_argument("--grab-timeout", default=5.0, type=float)
     parser.add_argument("--use-fa3", action="store_true")
@@ -117,18 +148,32 @@ def parse_args() -> argparse.Namespace:
 def run_live_agent(args: argparse.Namespace) -> dict:
     sl, zed = task5.open_zed(args)
     frame_output = args.frame_output.expanduser().resolve()
+    stereo_rgb = None
+    disparity_np = None
+    stereo_frame_output = args.stereo_frame_output.expanduser().resolve()
     try:
-        rgb_np, frame_info = task5.capture_processed_frame(
-            sl,
-            zed,
-            args,
-            warmup_frames=args.warmup_frames,
-        )
+        if args.stereo_warp_mask:
+            rgb_np, stereo_rgb, disparity_np, frame_info = task5.capture_processed_stereo_frame(
+                sl,
+                zed,
+                args,
+                warmup_frames=args.warmup_frames,
+            )
+        else:
+            rgb_np, frame_info = task5.capture_processed_frame(
+                sl,
+                zed,
+                args,
+                warmup_frames=args.warmup_frames,
+            )
     finally:
         zed.close()
 
     task5.write_rgb_image(frame_output, rgb_np)
     print(f"wrote_live_frame={frame_output}")
+    if stereo_rgb is not None:
+        task5.write_rgb_image(stereo_frame_output, stereo_rgb)
+        print(f"wrote_stereo_frame={stereo_frame_output}")
 
     agent_args = argparse.Namespace(
         image=frame_output,
@@ -152,10 +197,34 @@ def run_live_agent(args: argparse.Namespace) -> dict:
         debug=args.debug,
     )
     result = task6.run_agent(agent_args)
+    if args.stereo_warp_mask:
+        masks = task6.decode_agent_masks(result["agent_final_outputs"])
+        scores = np.asarray(
+            result["agent_final_outputs"].get("pred_scores", []),
+            dtype=np.float32,
+        )
+        kept, _ = task2.gate_masks(
+            masks,
+            scores,
+            conf_thresh=args.presence_conf_threshold,
+            min_area=args.min_area,
+        )
+        result["stereo_overlay"] = task5.write_stereo_overlay(
+            target_rgb_np=stereo_rgb,
+            source_kept=kept,
+            disparity_np=disparity_np,
+            label=args.request,
+            output_path=args.stereo_overlay_output,
+            source_view_name=args.view,
+            cleanup_kernel=args.stereo_cleanup_kernel,
+            configured_shift_sign=args.stereo_disparity_sign,
+        )
     result["zed_frame"] = {
         **frame_info,
         "saved_frame": str(frame_output),
     }
+    if args.stereo_warp_mask:
+        result["zed_frame"]["stereo_saved_frame"] = str(stereo_frame_output)
 
     output_path = args.output_json.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,8 +252,10 @@ def loop_run_args(
 ) -> argparse.Namespace:
     run_args = argparse.Namespace(**vars(args))
     run_args.frame_output = round_dir / "frame.png"
+    run_args.stereo_frame_output = round_dir / "frame_stereo.png"
     run_args.output_json = round_dir / "result.json"
     run_args.overlay_output = round_dir / "overlay.png"
+    run_args.stereo_overlay_output = round_dir / "overlay_stereo.png"
     run_args.agent_render_output = round_dir / "agent_render.png"
     run_args.agent_output_dir = agent_output_dir
     return run_args
@@ -199,6 +270,7 @@ def loop_record(*, index: int, round_dir: Path, result: dict[str, Any]) -> dict[
         "frame": str(round_dir / "frame.png"),
         "result_json": str(round_dir / "result.json"),
         "overlay": result.get("overlay", {}).get("output"),
+        "stereo_overlay": result.get("stereo_overlay", {}).get("output"),
         "agent_render_output": result.get("agent_render_output"),
         "num_candidates": gate.get("num_candidates"),
         "num_kept": gate.get("num_kept"),
@@ -295,6 +367,8 @@ def main() -> None:
     print(f"wrote={args.output_json.expanduser().resolve()}")
     print(f"wrote_agent_render={result['agent_render_output']}")
     print(f"wrote_overlay={result['overlay']['output']}")
+    if result.get("stereo_overlay") is not None:
+        print(f"wrote_stereo_overlay={result['stereo_overlay']['output']}")
 
 
 if __name__ == "__main__":

@@ -11,12 +11,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import stereo_mask_warp as stereo
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "checkpoints/sam3.1/sam3.1_multiplex.pt"
 DEFAULT_FRAME_OUTPUT = PROJECT_ROOT / "outputs/task5_live_frame.png"
+DEFAULT_STEREO_FRAME_OUTPUT = PROJECT_ROOT / "outputs/task5_live_frame_stereo.png"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/task5_zed_live_prompt.json"
 DEFAULT_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live.png"
+DEFAULT_STEREO_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live_stereo.png"
 
 
 RESOLUTION_NAMES = ("HD2K", "HD1200", "HD1080", "HD720", "SVGA", "VGA", "AUTO")
@@ -134,7 +138,40 @@ def parse_args() -> argparse.Namespace:
         "--view",
         default="LEFT",
         choices=VIEW_NAMES,
-        help="ZED image view to retrieve.",
+        help="ZED image view to retrieve and run SAM on.",
+    )
+    parser.add_argument(
+        "--stereo-warp-mask",
+        action="store_true",
+        help=(
+            "Retrieve the opposite ZED view and write a second overlay by "
+            "warping the kept masks with ZED disparity instead of rerunning SAM."
+        ),
+    )
+    parser.add_argument(
+        "--stereo-frame-output",
+        default=DEFAULT_STEREO_FRAME_OUTPUT,
+        type=Path,
+        help="Where to save the opposite-view RGB frame when --stereo-warp-mask is set.",
+    )
+    parser.add_argument(
+        "--stereo-overlay-output",
+        default=DEFAULT_STEREO_OVERLAY_OUTPUT,
+        type=Path,
+        help="Where to write the opposite-view warped-mask overlay.",
+    )
+    parser.add_argument(
+        "--stereo-cleanup-kernel",
+        default=3,
+        type=int,
+        help="Odd morphology kernel used to close small holes in warped stereo masks. Use 1 to disable.",
+    )
+    parser.add_argument(
+        "--stereo-disparity-sign",
+        default=None,
+        type=int,
+        choices=(-1, 1),
+        help="Override disparity shift sign if the warped mask moves the wrong way.",
     )
     parser.add_argument(
         "--warmup-frames",
@@ -197,6 +234,33 @@ def wait_for_grab(sl: object, zed: object, timeout_sec: float) -> None:
     raise RuntimeError(f"ZED grab failed before timeout: {last_error}")
 
 
+def retrieve_zed_rgb(sl: object, zed: object, view_name: str) -> np.ndarray:
+    rgb_mat = sl.Mat()
+    zed.retrieve_image(rgb_mat, getattr(sl.VIEW, view_name))
+    bgra = rgb_mat.get_data()
+    if bgra.ndim != 3 or bgra.shape[2] < 3:
+        raise RuntimeError(f"Unexpected ZED image shape: {bgra.shape}")
+    return bgra[:, :, :3][:, :, ::-1].copy()
+
+
+def retrieve_zed_disparity(
+    sl: object,
+    zed: object,
+    source_view_name: str,
+) -> tuple[np.ndarray, str]:
+    measure_name = stereo.disparity_measure_name(source_view_name)
+    disparity_mat = sl.Mat()
+    err = zed.retrieve_measure(disparity_mat, getattr(sl.MEASURE, measure_name))
+    if err is not None and err != sl.ERROR_CODE.SUCCESS:
+        raise RuntimeError(f"ZED retrieve_measure({measure_name}) failed: {err}")
+    disparity = disparity_mat.get_data()
+    if disparity.ndim == 3:
+        disparity = disparity[:, :, 0]
+    if disparity.ndim != 2:
+        raise RuntimeError(f"Unexpected ZED disparity shape: {disparity.shape}")
+    return disparity.astype(np.float32, copy=True), measure_name
+
+
 def grab_zed_rgb(
     sl: object,
     zed: object,
@@ -208,12 +272,25 @@ def grab_zed_rgb(
         wait_for_grab(sl, zed, grab_timeout)
 
     wait_for_grab(sl, zed, grab_timeout)
-    rgb_mat = sl.Mat()
-    zed.retrieve_image(rgb_mat, getattr(sl.VIEW, view_name))
-    bgra = rgb_mat.get_data()
-    if bgra.ndim != 3 or bgra.shape[2] < 3:
-        raise RuntimeError(f"Unexpected ZED image shape: {bgra.shape}")
-    return bgra[:, :, :3][:, :, ::-1].copy()
+    return retrieve_zed_rgb(sl, zed, view_name)
+
+
+def grab_zed_stereo_rgb_and_disparity(
+    sl: object,
+    zed: object,
+    source_view_name: str,
+    warmup_frames: int,
+    grab_timeout: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, str, str]:
+    for _ in range(max(warmup_frames, 0)):
+        wait_for_grab(sl, zed, grab_timeout)
+
+    wait_for_grab(sl, zed, grab_timeout)
+    target_view_name = stereo.opposite_view(source_view_name)
+    source_rgb = retrieve_zed_rgb(sl, zed, source_view_name)
+    target_rgb = retrieve_zed_rgb(sl, zed, target_view_name)
+    disparity, measure_name = retrieve_zed_disparity(sl, zed, source_view_name)
+    return source_rgb, target_rgb, disparity, target_view_name, measure_name
 
 
 def apply_crop(
@@ -281,6 +358,77 @@ def capture_processed_frame(
     return rgb_np, frame_info
 
 
+def capture_processed_stereo_frame(
+    sl: object,
+    zed: object,
+    args: argparse.Namespace,
+    warmup_frames: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    source_full, target_full, disparity_full, target_view, measure_name = (
+        grab_zed_stereo_rgb_and_disparity(
+            sl,
+            zed,
+            source_view_name=args.view,
+            warmup_frames=warmup_frames,
+            grab_timeout=args.grab_timeout,
+        )
+    )
+    source_rgb, crop_info = apply_crop(source_full, args.crop)
+    target_rgb, _ = apply_crop(target_full, args.crop)
+    disparity_np, _ = apply_crop(disparity_full, args.crop)
+    frame_info = {
+        "view": args.view,
+        "target_view": target_view,
+        "resolution": args.resolution,
+        "camera_fps": int(args.camera_fps),
+        "crop": crop_info,
+        "stereo_warp": {
+            "enabled": True,
+            "source_view": args.view,
+            "target_view": target_view,
+            "disparity_measure": measure_name,
+        },
+    }
+    return source_rgb, target_rgb, disparity_np, frame_info
+
+
+def write_stereo_overlay(
+    *,
+    target_rgb_np: np.ndarray,
+    source_kept: list[tuple[np.ndarray, float]],
+    disparity_np: np.ndarray,
+    label: str,
+    output_path: Path,
+    source_view_name: str,
+    cleanup_kernel: int,
+    configured_shift_sign: int | None,
+) -> dict:
+    import task2_sam31_image_prompt as task2
+
+    shift_sign = stereo.resolve_shift_sign(source_view_name, configured_shift_sign)
+    warped_kept, warp_stats = stereo.warp_kept_masks(
+        source_kept,
+        disparity_np,
+        shift_sign=shift_sign,
+        cleanup_kernel=cleanup_kernel,
+    )
+    overlay = task2.overlay_masks(
+        target_rgb_np,
+        warped_kept,
+        label,
+        output_path.expanduser().resolve(),
+    )
+    return {
+        **overlay,
+        "source_view": source_view_name,
+        "target_view": stereo.opposite_view(source_view_name),
+        "disparity_measure": stereo.disparity_measure_name(source_view_name),
+        "shift_sign": int(shift_sign),
+        "cleanup_kernel": int(cleanup_kernel),
+        "mask_warp_stats": warp_stats,
+    }
+
+
 def run_preview(args: argparse.Namespace) -> None:
     sl, zed = open_zed(args)
     count = 0
@@ -288,12 +436,23 @@ def run_preview(args: argparse.Namespace) -> None:
     frame_output = args.frame_output.expanduser().resolve()
     try:
         while args.preview_count == 0 or count < args.preview_count:
-            rgb_np, frame_info = capture_processed_frame(
-                sl,
-                zed,
-                args,
-                warmup_frames=args.warmup_frames if first else 0,
-            )
+            if args.stereo_warp_mask:
+                rgb_np, stereo_rgb, _, frame_info = capture_processed_stereo_frame(
+                    sl,
+                    zed,
+                    args,
+                    warmup_frames=args.warmup_frames if first else 0,
+                )
+                stereo_frame_output = args.stereo_frame_output.expanduser().resolve()
+                write_rgb_image(stereo_frame_output, stereo_rgb)
+            else:
+                rgb_np, frame_info = capture_processed_frame(
+                    sl,
+                    zed,
+                    args,
+                    warmup_frames=args.warmup_frames if first else 0,
+                )
+                stereo_frame_output = None
             first = False
             count += 1
             write_rgb_image(frame_output, rgb_np)
@@ -301,6 +460,8 @@ def run_preview(args: argparse.Namespace) -> None:
                 f"preview_frame={count} wrote={frame_output} "
                 f"size={rgb_np.shape[1]}x{rgb_np.shape[0]} crop={frame_info['crop']}"
             )
+            if stereo_frame_output is not None:
+                print(f"preview_stereo_frame={count} wrote={stereo_frame_output}")
             if args.preview_count == 0 or count < args.preview_count:
                 time.sleep(max(args.interval, 0.0))
     except KeyboardInterrupt:
@@ -312,18 +473,32 @@ def run_preview(args: argparse.Namespace) -> None:
 def run_segment(args: argparse.Namespace) -> dict:
     sl, zed = open_zed(args)
     frame_output = args.frame_output.expanduser().resolve()
+    stereo_rgb = None
+    disparity_np = None
+    stereo_frame_output = args.stereo_frame_output.expanduser().resolve()
     try:
-        rgb_np, frame_info = capture_processed_frame(
-            sl,
-            zed,
-            args,
-            warmup_frames=args.warmup_frames,
-        )
+        if args.stereo_warp_mask:
+            rgb_np, stereo_rgb, disparity_np, frame_info = capture_processed_stereo_frame(
+                sl,
+                zed,
+                args,
+                warmup_frames=args.warmup_frames,
+            )
+        else:
+            rgb_np, frame_info = capture_processed_frame(
+                sl,
+                zed,
+                args,
+                warmup_frames=args.warmup_frames,
+            )
     finally:
         zed.close()
 
     write_rgb_image(frame_output, rgb_np)
     print(f"wrote_live_frame={frame_output}")
+    if stereo_rgb is not None:
+        write_rgb_image(stereo_frame_output, stereo_rgb)
+        print(f"wrote_stereo_frame={stereo_frame_output}")
 
     import task2_sam31_image_prompt as task2
 
@@ -340,11 +515,25 @@ def run_segment(args: argparse.Namespace) -> dict:
         use_fa3=args.use_fa3,
         verbose_load=args.verbose_load,
     )
-    result = task2.run_once(sam_args)
+    result = task2.run_once(sam_args, include_kept_masks=args.stereo_warp_mask)
+    kept = result.pop("_kept_masks", [])
+    if args.stereo_warp_mask:
+        result["stereo_overlay"] = write_stereo_overlay(
+            target_rgb_np=stereo_rgb,
+            source_kept=kept,
+            disparity_np=disparity_np,
+            label=args.prompt,
+            output_path=args.stereo_overlay_output,
+            source_view_name=args.view,
+            cleanup_kernel=args.stereo_cleanup_kernel,
+            configured_shift_sign=args.stereo_disparity_sign,
+        )
     result["zed_frame"] = {
         **frame_info,
         "saved_frame": str(frame_output),
     }
+    if args.stereo_warp_mask:
+        result["zed_frame"]["stereo_saved_frame"] = str(stereo_frame_output)
 
     output_path = args.output_json.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -352,6 +541,8 @@ def run_segment(args: argparse.Namespace) -> dict:
     print(f"wrote={output_path}")
     if result.get("overlay") is not None:
         print(f"wrote_overlay={result['overlay']['output']}")
+    if result.get("stereo_overlay") is not None:
+        print(f"wrote_stereo_overlay={result['stereo_overlay']['output']}")
     return result
 
 
