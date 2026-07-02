@@ -227,11 +227,16 @@ def run_loop(args: argparse.Namespace) -> dict[str, Any]:
         while True:
             round_dir = output_root / f"round_{index:03d}"
             round_dir.mkdir(parents=True, exist_ok=True)
-            print(f"loop_round={index} output={round_dir}")
+            print("=" * 72)
+            print(f"LOOP ROUND {index} START")
+            print(f"loop_round={index}")
+            print(f"loop_round_output={round_dir}")
+            print("Internal agent reasoning rounds may print as 'Round 1', 'Round 2', etc.")
             try:
                 with tempfile.TemporaryDirectory(
                     prefix=f"task7_round_{index:03d}_agent_"
                 ) as agent_dir:
+                    print(f"INTERNAL AGENT REASONING START for loop_round={index}")
                     result = run_live_agent(
                         loop_run_args(
                             args,
@@ -239,6 +244,7 @@ def run_loop(args: argparse.Namespace) -> dict[str, Any]:
                             agent_output_dir=Path(agent_dir),
                         )
                     )
+                    print(f"INTERNAL AGENT REASONING END for loop_round={index}")
             except Exception as exc:
                 record = {
                     "round": index,
@@ -248,13 +254,19 @@ def run_loop(args: argparse.Namespace) -> dict[str, Any]:
                 }
                 summary["runs"].append(record)
                 write_loop_summary(output_root, summary)
+                print(f"LOOP ROUND {index} ERROR: {exc!r}")
                 if not args.continue_on_error:
                     raise
             else:
-                summary["runs"].append(
-                    loop_record(index=index, round_dir=round_dir, result=result)
-                )
+                record = loop_record(index=index, round_dir=round_dir, result=result)
+                summary["runs"].append(record)
                 write_loop_summary(output_root, summary)
+                print(
+                    f"LOOP ROUND {index} COMPLETE "
+                    f"kept={record['num_kept']} "
+                    f"candidates={record['num_candidates']} "
+                    f"result_json={record['result_json']}"
+                )
 
             index += 1
             time.sleep(max(args.loop_interval, 0.0))
