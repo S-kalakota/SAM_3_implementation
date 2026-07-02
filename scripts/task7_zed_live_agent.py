@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
+import time
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import local_qwen
 import task2_sam31_image_prompt as task2
@@ -19,6 +23,14 @@ DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/task7_zed_live_agent.json"
 DEFAULT_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live_agent.png"
 DEFAULT_AGENT_RENDER_OUTPUT = PROJECT_ROOT / "outputs/result_live_agent_meta.png"
 DEFAULT_AGENT_OUTPUT_DIR = PROJECT_ROOT / "outputs/task7_live_agent_workspace"
+DEFAULT_LOOP_OUTPUT_ROOT = PROJECT_ROOT / "outputs/task7_live_agent_loop"
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be 1 or greater")
+    return parsed
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,6 +83,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-fa3", action="store_true")
     parser.add_argument("--verbose-load", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Keep running live-agent captures until Ctrl-C.",
+    )
+    parser.add_argument(
+        "--loop-output-root",
+        default=DEFAULT_LOOP_OUTPUT_ROOT,
+        type=Path,
+        help="Run folder where round_### loop outputs are written.",
+    )
+    parser.add_argument(
+        "--loop-start-index",
+        default=1,
+        type=positive_int,
+        help="Starting index for loop output folders.",
+    )
+    parser.add_argument(
+        "--loop-interval",
+        default=0.0,
+        type=float,
+        help="Seconds to wait between loop runs.",
+    )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="In loop mode, record errors and continue instead of stopping.",
+    )
     return parser.parse_args()
 
 
@@ -123,8 +163,116 @@ def run_live_agent(args: argparse.Namespace) -> dict:
     return result
 
 
+def timestamp() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def write_loop_summary(output_root: Path, summary: dict[str, Any]) -> None:
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "summary.json").write_text(
+        json.dumps(summary, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def loop_run_args(
+    args: argparse.Namespace,
+    *,
+    round_dir: Path,
+    agent_output_dir: Path,
+) -> argparse.Namespace:
+    run_args = argparse.Namespace(**vars(args))
+    run_args.frame_output = round_dir / "frame.png"
+    run_args.output_json = round_dir / "result.json"
+    run_args.overlay_output = round_dir / "overlay.png"
+    run_args.agent_render_output = round_dir / "agent_render.png"
+    run_args.agent_output_dir = agent_output_dir
+    return run_args
+
+
+def loop_record(*, index: int, round_dir: Path, result: dict[str, Any]) -> dict[str, Any]:
+    gate = result.get("presence_gate", {})
+    return {
+        "round": index,
+        "status": "ok",
+        "round_dir": str(round_dir),
+        "frame": str(round_dir / "frame.png"),
+        "result_json": str(round_dir / "result.json"),
+        "overlay": result.get("overlay", {}).get("output"),
+        "agent_render_output": result.get("agent_render_output"),
+        "num_candidates": gate.get("num_candidates"),
+        "num_kept": gate.get("num_kept"),
+        "kept_scores": gate.get("kept_scores"),
+        "kept_areas_pixels": gate.get("kept_areas_pixels"),
+    }
+
+
+def run_loop(args: argparse.Namespace) -> dict[str, Any]:
+    output_root = args.loop_output_root.expanduser().resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    summary: dict[str, Any] = {
+        "started_at": timestamp(),
+        "finished_at": None,
+        "request": args.request,
+        "crop": list(args.crop) if args.crop is not None else None,
+        "output_root": str(output_root),
+        "runs": [],
+    }
+    write_loop_summary(output_root, summary)
+
+    index = args.loop_start_index
+    print(f"loop_output_root={output_root}")
+    print("loop_status=running; press Ctrl-C to stop")
+    try:
+        while True:
+            round_dir = output_root / f"round_{index:03d}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+            print(f"loop_round={index} output={round_dir}")
+            try:
+                with tempfile.TemporaryDirectory(
+                    prefix=f"task7_round_{index:03d}_agent_"
+                ) as agent_dir:
+                    result = run_live_agent(
+                        loop_run_args(
+                            args,
+                            round_dir=round_dir,
+                            agent_output_dir=Path(agent_dir),
+                        )
+                    )
+            except Exception as exc:
+                record = {
+                    "round": index,
+                    "status": "error",
+                    "round_dir": str(round_dir),
+                    "error": repr(exc),
+                }
+                summary["runs"].append(record)
+                write_loop_summary(output_root, summary)
+                if not args.continue_on_error:
+                    raise
+            else:
+                summary["runs"].append(
+                    loop_record(index=index, round_dir=round_dir, result=result)
+                )
+                write_loop_summary(output_root, summary)
+
+            index += 1
+            time.sleep(max(args.loop_interval, 0.0))
+    except KeyboardInterrupt:
+        print("loop_status=stopped_by_keyboard_interrupt")
+    finally:
+        summary["finished_at"] = timestamp()
+        write_loop_summary(output_root, summary)
+    return summary
+
+
 def main() -> None:
     args = parse_args()
+    if args.loop:
+        summary = run_loop(args)
+        print(f"wrote_summary={Path(summary['output_root']) / 'summary.json'}")
+        return
+
     result = run_live_agent(args)
     gate = result["presence_gate"]
     print(f"request={result['request']!r}")
