@@ -7,6 +7,65 @@ import cv2
 import numpy as np
 
 
+def mask_bbox_xyxy(mask: np.ndarray) -> list[int] | None:
+    ys, xs = np.where(mask.astype(bool, copy=False))
+    if ys.size == 0:
+        return None
+    return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
+def mask_centroid_xy(mask: np.ndarray) -> list[float] | None:
+    ys, xs = np.where(mask.astype(bool, copy=False))
+    if ys.size == 0:
+        return None
+    return [float(xs.mean()), float(ys.mean())]
+
+
+def valid_disparity_values(disparity: np.ndarray) -> np.ndarray:
+    values = disparity.astype(np.float32, copy=False).reshape(-1)
+    valid = np.isfinite(values)
+    valid &= np.abs(values) < 10000.0
+    return values[valid]
+
+
+def disparity_image_stats(disparity: np.ndarray) -> dict:
+    values = valid_disparity_values(disparity)
+    total_pixels = int(disparity.size)
+    if values.size == 0:
+        return {
+            "total_pixels": total_pixels,
+            "valid_pixels": 0,
+            "nonzero_valid_pixels": 0,
+            "min": None,
+            "max": None,
+            "mean": None,
+            "median": None,
+        }
+
+    return {
+        "total_pixels": total_pixels,
+        "valid_pixels": int(values.size),
+        "nonzero_valid_pixels": int(np.count_nonzero(values)),
+        "min": float(values.min()),
+        "max": float(values.max()),
+        "mean": float(values.mean()),
+        "median": float(np.median(values)),
+    }
+
+
+def disparity_stats(values: np.ndarray, *, shift_sign: int) -> dict | None:
+    if values.size == 0:
+        return None
+    return {
+        "min": float(values.min()),
+        "max": float(values.max()),
+        "mean": float(values.mean()),
+        "median": float(np.median(values)),
+        "mean_horizontal_shift_pixels": float(shift_sign * values.mean()),
+        "median_horizontal_shift_pixels": float(shift_sign * np.median(values)),
+    }
+
+
 def opposite_view(view_name: str) -> str:
     if view_name == "LEFT":
         return "RIGHT"
@@ -70,13 +129,21 @@ def warp_mask_by_disparity(
     mask_bool = mask.astype(bool, copy=False)
     ys, xs = np.where(mask_bool)
     source_pixels = int(ys.size)
+    source_bbox = mask_bbox_xyxy(mask_bool)
+    source_centroid = mask_centroid_xy(mask_bool)
     target = np.zeros(mask_bool.shape, dtype=bool)
     if source_pixels == 0:
         return target, {
             "source_pixels": 0,
+            "source_bbox_xyxy": None,
+            "source_centroid_xy": None,
             "valid_disparity_pixels": 0,
+            "disparity_pixels": None,
             "projected_pixels": 0,
             "target_pixels": 0,
+            "target_bbox_xyxy": None,
+            "target_centroid_xy": None,
+            "centroid_shift_xy": None,
         }
 
     d = disparity[ys, xs].astype(np.float32, copy=False)
@@ -85,22 +152,46 @@ def warp_mask_by_disparity(
     if not valid.any():
         return target, {
             "source_pixels": source_pixels,
+            "source_bbox_xyxy": source_bbox,
+            "source_centroid_xy": source_centroid,
             "valid_disparity_pixels": 0,
+            "disparity_pixels": None,
             "projected_pixels": 0,
             "target_pixels": 0,
+            "target_bbox_xyxy": None,
+            "target_centroid_xy": None,
+            "centroid_shift_xy": None,
         }
 
-    xr = np.rint(xs[valid].astype(np.float32) + shift_sign * d[valid]).astype(np.int32)
+    valid_disparities = d[valid]
+    xr = np.rint(xs[valid].astype(np.float32) + shift_sign * valid_disparities).astype(
+        np.int32
+    )
     yr = ys[valid]
     inside = (xr >= 0) & (xr < mask_bool.shape[1])
     target[yr[inside], xr[inside]] = True
     target = cleanup_mask(target, cleanup_kernel)
+    target_bbox = mask_bbox_xyxy(target)
+    target_centroid = mask_centroid_xy(target)
+    if source_centroid is None or target_centroid is None:
+        centroid_shift = None
+    else:
+        centroid_shift = [
+            float(target_centroid[0] - source_centroid[0]),
+            float(target_centroid[1] - source_centroid[1]),
+        ]
 
     return target, {
         "source_pixels": source_pixels,
+        "source_bbox_xyxy": source_bbox,
+        "source_centroid_xy": source_centroid,
         "valid_disparity_pixels": int(valid.sum()),
+        "disparity_pixels": disparity_stats(valid_disparities, shift_sign=shift_sign),
         "projected_pixels": int(inside.sum()),
         "target_pixels": int(target.sum()),
+        "target_bbox_xyxy": target_bbox,
+        "target_centroid_xy": target_centroid,
+        "centroid_shift_xy": centroid_shift,
     }
 
 

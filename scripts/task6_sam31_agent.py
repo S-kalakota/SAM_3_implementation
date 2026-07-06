@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -233,15 +234,133 @@ def decode_agent_masks(agent_outputs: dict[str, Any]) -> np.ndarray:
     return np.stack(decoded, axis=0)
 
 
+AGENT_TOOL_NAMES = (
+    "segment_phrase",
+    "examine_each_mask",
+    "select_masks_and_return",
+    "report_no_mask",
+)
+
+
+def _decode_json_object_at(text: str, start: int) -> tuple[dict[str, Any], int] | None:
+    """Decode a JSON object embedded in a larger model response."""
+
+    suffix = text[start:]
+    stripped = suffix.lstrip()
+    offset = len(suffix) - len(stripped)
+    try:
+        value, end = json.JSONDecoder().raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    return value, start + offset + end
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    for match in re.finditer(r"\{", text):
+        decoded = _decode_json_object_at(text, match.start())
+        if decoded is not None:
+            return decoded[0]
+    return None
+
+
+def _coerce_tool_call(value: dict[str, Any]) -> dict[str, Any] | None:
+    name = value.get("name")
+    if isinstance(name, str) and name in AGENT_TOOL_NAMES:
+        parameters = value.get("parameters", {})
+        if parameters is None:
+            parameters = {}
+        if isinstance(parameters, dict):
+            return {"name": name, "parameters": parameters}
+        return None
+
+    if set(value) == {"text_prompt"}:
+        return {"name": "segment_phrase", "parameters": value}
+    if set(value) == {"final_answer_masks"}:
+        return {"name": "select_masks_and_return", "parameters": value}
+    return None
+
+
+def _extract_tool_call_from_text(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        decoded = _decode_json_object_at(stripped, 0)
+        if decoded is not None:
+            direct_call = _coerce_tool_call(decoded[0])
+            if direct_call is not None:
+                return direct_call
+
+    cleaned = re.sub(
+        r"<think\b[^>]*>.*?</think>",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    direct_json = _first_json_object(cleaned)
+    if direct_json is not None:
+        direct_call = _coerce_tool_call(direct_json)
+        if direct_call is not None:
+            return direct_call
+
+    tool_name_pattern = "|".join(re.escape(name) for name in AGENT_TOOL_NAMES)
+    match = re.search(
+        rf"<?\s*({tool_name_pattern})(?=\s|\{{|>|/|$)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+
+    tool_name = next(
+        name for name in AGENT_TOOL_NAMES if name.lower() == match.group(1).lower()
+    )
+    json_start = cleaned.find("{", match.end())
+    if json_start == -1:
+        return {"name": tool_name, "parameters": {}}
+
+    parameters = _first_json_object(cleaned[json_start:])
+    if parameters is None:
+        return None
+    nested_call = _coerce_tool_call(parameters)
+    if nested_call is not None:
+        return nested_call
+    return {"name": tool_name, "parameters": parameters}
+
+
+def normalize_agent_tool_response(text: str) -> str:
+    """Normalize Qwen's occasional XML-ish tool call into SAM agent JSON."""
+
+    tool_match = re.search(
+        r"<tool\b[^>]*>(.*?)</tool>",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    tool_body = tool_match.group(1) if tool_match is not None else text
+    tool_call = _extract_tool_call_from_text(tool_body)
+    if tool_call is None:
+        return text
+
+    tool_json = json.dumps(tool_call, ensure_ascii=False)
+    normalized_tool = f"<tool> {tool_json} </tool>"
+    if tool_match is None:
+        return normalized_tool
+    return text[: tool_match.start()] + normalized_tool + text[tool_match.end() :]
+
+
 def build_qwen_sender(args: argparse.Namespace):
     def send_generate_request(messages: list[dict[str, Any]]) -> str:
-        return local_qwen.qwen_generate(
+        generated_text = local_qwen.qwen_generate(
             messages,
             model_id=args.qwen_model,
             max_new_tokens=args.qwen_max_new_tokens,
             local_files_only=not args.allow_qwen_downloads,
             device_map=args.qwen_device_map,
         )
+        normalized_text = normalize_agent_tool_response(generated_text)
+        if normalized_text != generated_text:
+            print("normalized_qwen_tool_call=true")
+        return normalized_text
 
     return send_generate_request
 

@@ -302,16 +302,16 @@
         "L4T version": "38.4.0",
         "OS": "Ubuntu 24.04.4 LTS ",
         "avxSupported": false,
-        "coreCount": "1461%",
+        "coreCount": "1457%",
         "cpu": "",
-        "datetime": "2026-07-02 11:47:13 AM",
+        "datetime": "2026-07-06 10:51:12 AM",
         "hyperThreading": "0",
         "motherboard": "Jetson, NVIDIA",
         "platform": "NVIDIA Jetson (L4T)",
         "ramCapacity": "131.879342",
         "ramUsage": "",
-        "ramUsed": "91.173585",
-        "threadCount": "1461",
+        "ramUsed": "89.702470",
+        "threadCount": "1457",
         "valid": [
             "<b>Processor: </b> ",
             "<b>Motherboard: </b> Jetson, NVIDIA"
@@ -438,13 +438,13 @@
         "sensors": [
         ],
         "valid": [
-            "<b>Camera: </b>ZED 2i"
+            "<b>Camera: </b>ZED 2i",
+            "<b>USB Bandwidth: </b> OK",
+            "<b>USB Bandwidth: </b> OK"
         ],
         "warning": [
             "<b>No GMSL driver found.</b><br/> USB camera are not impacted by this.",
-            "<b>Low USB bandwidth</b> <br/> Read our FAQ to troubleshoot your USB connection issues. <a href='https://support.stereolabs.com/hc/en-us/articles/207635225' style='color: #d9ff42;' >Learn more</a><br/> <b>Frame drops:</b> 34/500<br/> <b>Frame tearing:</b> 4/500",
-            "<b>No GMSL driver found.</b><br/> USB camera are not impacted by this.",
-            "<b>Low USB bandwidth</b> <br/> Read our FAQ to troubleshoot your USB connection issues. <a href='https://support.stereolabs.com/hc/en-us/articles/207635225' style='color: #d9ff42;' >Learn more</a><br/> <b>Frame drops:</b> 34/500<br/> <b>Frame tearing:</b> 4/500"
+            "<b>No GMSL driver found.</b><br/> USB camera are not impacted by this."
         ]
     },
     "ZED SDK": {

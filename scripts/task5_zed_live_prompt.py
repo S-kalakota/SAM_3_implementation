@@ -387,6 +387,7 @@ def capture_processed_stereo_frame(
             "source_view": args.view,
             "target_view": target_view,
             "disparity_measure": measure_name,
+            "disparity_image": stereo.disparity_image_stats(disparity_np),
         },
     }
     return source_rgb, target_rgb, disparity_np, frame_info

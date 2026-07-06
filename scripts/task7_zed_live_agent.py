@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import local_qwen
+import stereo_mask_warp as stereo
 import task2_sam31_image_prompt as task2
 import task5_zed_live_prompt as task5
 import task6_sam31_agent as task6
@@ -36,6 +37,22 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def apply_view_output_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    source_view = args.view.lower()
+    target_view = stereo.opposite_view(args.view).lower()
+    output_dir = PROJECT_ROOT / "outputs"
+    defaults = {
+        "frame_output": output_dir / f"{source_view}_view.png",
+        "stereo_frame_output": output_dir / f"{target_view}_view.png",
+        "overlay_output": output_dir / f"{source_view}_view_overlay.png",
+        "stereo_overlay_output": output_dir / f"{target_view}_view_overlay.png",
+    }
+    for name, path in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, path)
+    return args
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -55,19 +72,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--frame-output",
-        default=DEFAULT_FRAME_OUTPUT,
+        default=None,
         type=Path,
         help="Where to save the live RGB frame before the agent runs.",
     )
     parser.add_argument(
         "--stereo-frame-output",
-        default=DEFAULT_STEREO_FRAME_OUTPUT,
+        default=None,
         type=Path,
         help="Where to save the opposite-view RGB frame when --stereo-warp-mask is set.",
     )
     parser.add_argument("--output-json", default=DEFAULT_OUTPUT, type=Path)
-    parser.add_argument("--overlay-output", default=DEFAULT_OVERLAY_OUTPUT, type=Path)
-    parser.add_argument("--stereo-overlay-output", default=DEFAULT_STEREO_OVERLAY_OUTPUT, type=Path)
+    parser.add_argument("--overlay-output", default=None, type=Path)
+    parser.add_argument("--stereo-overlay-output", default=None, type=Path)
     parser.add_argument("--agent-render-output", default=DEFAULT_AGENT_RENDER_OUTPUT, type=Path)
     parser.add_argument("--agent-output-dir", default=DEFAULT_AGENT_OUTPUT_DIR, type=Path)
     parser.add_argument("--checkpoint", default=task6.DEFAULT_CHECKPOINT, type=Path)
@@ -142,7 +159,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="In loop mode, record errors and continue instead of stopping.",
     )
-    return parser.parse_args()
+    return apply_view_output_defaults(parser.parse_args())
 
 
 def run_live_agent(args: argparse.Namespace) -> dict:
@@ -251,11 +268,13 @@ def loop_run_args(
     agent_output_dir: Path,
 ) -> argparse.Namespace:
     run_args = argparse.Namespace(**vars(args))
-    run_args.frame_output = round_dir / "frame.png"
-    run_args.stereo_frame_output = round_dir / "frame_stereo.png"
+    source_view = args.view.lower()
+    target_view = stereo.opposite_view(args.view).lower()
+    run_args.frame_output = round_dir / f"{source_view}_view.png"
+    run_args.stereo_frame_output = round_dir / f"{target_view}_view.png"
     run_args.output_json = round_dir / "result.json"
-    run_args.overlay_output = round_dir / "overlay.png"
-    run_args.stereo_overlay_output = round_dir / "overlay_stereo.png"
+    run_args.overlay_output = round_dir / f"{source_view}_view_overlay.png"
+    run_args.stereo_overlay_output = round_dir / f"{target_view}_view_overlay.png"
     run_args.agent_render_output = round_dir / "agent_render.png"
     run_args.agent_output_dir = agent_output_dir
     return run_args
@@ -263,12 +282,31 @@ def loop_run_args(
 
 def loop_record(*, index: int, round_dir: Path, result: dict[str, Any]) -> dict[str, Any]:
     gate = result.get("presence_gate", {})
+    zed_frame = result.get("zed_frame", {})
+    source_view = zed_frame.get("view")
+    target_view = zed_frame.get("target_view")
+
+    frame_by_view = {}
+    overlay_by_view = {}
+    if source_view is not None:
+        frame_by_view[source_view] = zed_frame.get("saved_frame")
+        overlay_by_view[source_view] = result.get("overlay", {}).get("output")
+    if target_view is not None:
+        frame_by_view[target_view] = zed_frame.get("stereo_saved_frame")
+        overlay_by_view[target_view] = result.get("stereo_overlay", {}).get("output")
+
     return {
         "round": index,
         "status": "ok",
         "round_dir": str(round_dir),
-        "frame": str(round_dir / "frame.png"),
         "result_json": str(round_dir / "result.json"),
+        "source_view": source_view,
+        "target_view": target_view,
+        "left_view_frame": frame_by_view.get("LEFT"),
+        "right_view_frame": frame_by_view.get("RIGHT"),
+        "left_view_overlay": overlay_by_view.get("LEFT"),
+        "right_view_overlay": overlay_by_view.get("RIGHT"),
+        "frame": zed_frame.get("saved_frame"),
         "overlay": result.get("overlay", {}).get("output"),
         "stereo_overlay": result.get("stereo_overlay", {}).get("output"),
         "agent_render_output": result.get("agent_render_output"),
