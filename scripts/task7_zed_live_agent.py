@@ -183,8 +183,14 @@ def run_live_agent(args: argparse.Namespace) -> dict:
                 args,
                 warmup_frames=args.warmup_frames,
             )
+        depth_np, xyz_np, depth_info = task5.retrieve_zed_depth_and_xyz(
+            sl, zed, args.view
+        )
     finally:
         zed.close()
+
+    depth_np, _ = task5.apply_crop(depth_np, args.crop)
+    xyz_np, _ = task5.apply_crop(xyz_np, args.crop)
 
     task5.write_rgb_image(frame_output, rgb_np)
     print(f"wrote_live_frame={frame_output}")
@@ -214,18 +220,26 @@ def run_live_agent(args: argparse.Namespace) -> dict:
         debug=args.debug,
     )
     result = task6.run_agent(agent_args)
+    masks = task6.decode_agent_masks(result["agent_final_outputs"])
+    scores = np.asarray(
+        result["agent_final_outputs"].get("pred_scores", []),
+        dtype=np.float32,
+    )
+    kept, _ = task2.gate_masks(
+        masks,
+        scores,
+        conf_thresh=args.presence_conf_threshold,
+        min_area=args.min_area,
+    )
+    result["object_depth"] = task5.object_depth_report(
+        kept,
+        depth_np=depth_np,
+        xyz_np=xyz_np,
+        view_name=args.view,
+        **depth_info,
+    )
+    task5.print_object_depths(result["object_depth"])
     if args.stereo_warp_mask:
-        masks = task6.decode_agent_masks(result["agent_final_outputs"])
-        scores = np.asarray(
-            result["agent_final_outputs"].get("pred_scores", []),
-            dtype=np.float32,
-        )
-        kept, _ = task2.gate_masks(
-            masks,
-            scores,
-            conf_thresh=args.presence_conf_threshold,
-            min_area=args.min_area,
-        )
         result["stereo_overlay"] = task5.write_stereo_overlay(
             target_rgb_np=stereo_rgb,
             source_kept=kept,
@@ -314,6 +328,14 @@ def loop_record(*, index: int, round_dir: Path, result: dict[str, Any]) -> dict[
         "num_kept": gate.get("num_kept"),
         "kept_scores": gate.get("kept_scores"),
         "kept_areas_pixels": gate.get("kept_areas_pixels"),
+        "object_median_depths_m": [
+            obj["depth_stats_m"]["median"]
+            for obj in (result.get("object_depth") or {}).get("objects", [])
+        ],
+        "object_xyz_centroids_m": [
+            obj["xyz_centroid_m"]
+            for obj in (result.get("object_depth") or {}).get("objects", [])
+        ],
     }
 
 

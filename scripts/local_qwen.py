@@ -22,6 +22,13 @@ DEFAULT_DEVICE_MAP = os.environ.get("SAM3_AGENT_QWEN_DEVICE_MAP", "auto")
 DEFAULT_MAX_NEW_TOKENS = int(os.environ.get("SAM3_AGENT_QWEN_MAX_NEW_TOKENS", "2048"))
 
 
+def _repetition_penalty_default() -> float | None:
+    # The model's shipped generation_config already applies 1.05; set this env
+    # var (e.g. 1.15) to damp the repetition loops small Qwen models fall into.
+    raw = os.environ.get("SAM3_AGENT_QWEN_REPETITION_PENALTY", "").strip()
+    return float(raw) if raw else None
+
+
 def _local_only_default() -> bool:
     raw = os.environ.get("SAM3_AGENT_QWEN_LOCAL_ONLY", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
@@ -111,6 +118,7 @@ def qwen_generate(
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     local_files_only: bool | None = None,
     device_map: str = DEFAULT_DEVICE_MAP,
+    repetition_penalty: float | None = None,
 ) -> str:
     """Generate text from local cached Qwen-VL for Meta's SAM3 agent messages."""
 
@@ -149,7 +157,13 @@ def qwen_generate(
     if hasattr(model, "device"):
         inputs = inputs.to(model.device)
 
-    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+    gen_kwargs: dict[str, Any] = {"max_new_tokens": max_new_tokens}
+    penalty = (
+        _repetition_penalty_default() if repetition_penalty is None else repetition_penalty
+    )
+    if penalty is not None:
+        gen_kwargs["repetition_penalty"] = penalty
+    generated_ids = model.generate(**inputs, **gen_kwargs)
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]

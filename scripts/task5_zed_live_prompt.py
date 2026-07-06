@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import mask_depth
 import stereo_mask_warp as stereo
 
 
@@ -212,8 +213,14 @@ def open_zed(args: argparse.Namespace):
     sl = import_zed()
     init_params = sl.InitParameters()
     init_params.camera_resolution = getattr(sl.RESOLUTION, args.resolution)
+    # Depth/point-cloud measures default to millimeters; keep everything metric.
+    init_params.coordinate_units = sl.UNIT.METER
     if args.camera_fps > 0:
         init_params.camera_fps = args.camera_fps
+    if getattr(args, "view", "LEFT") == "RIGHT":
+        # MEASURE.DISPARITY_RIGHT (and other *_RIGHT measures) fail with
+        # INVALID FUNCTION PARAMETERS unless right-side measures are enabled.
+        init_params.enable_right_side_measure = True
 
     zed = sl.Camera()
     err = zed.open(init_params)
@@ -259,6 +266,95 @@ def retrieve_zed_disparity(
     if disparity.ndim != 2:
         raise RuntimeError(f"Unexpected ZED disparity shape: {disparity.shape}")
     return disparity.astype(np.float32, copy=True), measure_name
+
+
+def depth_measure_names(view_name: str) -> tuple[str, str]:
+    if view_name == "LEFT":
+        return "DEPTH", "XYZ"
+    if view_name == "RIGHT":
+        return "DEPTH_RIGHT", "XYZ_RIGHT"
+    raise ValueError(f"Unsupported stereo view: {view_name}")
+
+
+def retrieve_zed_depth_and_xyz(
+    sl: object,
+    zed: object,
+    view_name: str,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Depth map and point cloud for the last grab, registered to `view_name`.
+
+    Must be called while the camera is open, after the grab that produced the
+    RGB frame, so all measures describe the same instant.
+    """
+    depth_name, xyz_name = depth_measure_names(view_name)
+
+    depth_mat = sl.Mat()
+    err = zed.retrieve_measure(depth_mat, getattr(sl.MEASURE, depth_name))
+    if err is not None and err != sl.ERROR_CODE.SUCCESS:
+        raise RuntimeError(f"ZED retrieve_measure({depth_name}) failed: {err}")
+    depth = depth_mat.get_data()
+    if depth.ndim == 3:
+        depth = depth[:, :, 0]
+    if depth.ndim != 2:
+        raise RuntimeError(f"Unexpected ZED depth shape: {depth.shape}")
+
+    xyz_mat = sl.Mat()
+    err = zed.retrieve_measure(xyz_mat, getattr(sl.MEASURE, xyz_name))
+    if err is not None and err != sl.ERROR_CODE.SUCCESS:
+        raise RuntimeError(f"ZED retrieve_measure({xyz_name}) failed: {err}")
+    xyz = xyz_mat.get_data()
+    if xyz.ndim != 3 or xyz.shape[2] < 3:
+        raise RuntimeError(f"Unexpected ZED XYZ shape: {xyz.shape}")
+
+    return (
+        depth.astype(np.float32, copy=True),
+        xyz.astype(np.float32, copy=True),
+        {"depth_measure": depth_name, "xyz_measure": xyz_name},
+    )
+
+
+def object_depth_report(
+    kept: list[tuple[np.ndarray, float]],
+    *,
+    depth_np: np.ndarray,
+    xyz_np: np.ndarray,
+    view_name: str,
+    depth_measure: str,
+    xyz_measure: str,
+) -> dict:
+    objects = []
+    for index, (mask, score) in enumerate(kept):
+        objects.append(
+            {
+                "index": index,
+                "score": float(score),
+                "depth_stats_m": mask_depth.mask_depth_stats(mask, depth_np),
+                "xyz_centroid_m": mask_depth.mask_xyz_centroid(mask, xyz_np),
+            }
+        )
+    return {
+        "view": view_name,
+        "depth_measure": depth_measure,
+        "xyz_measure": xyz_measure,
+        "units": "meters",
+        "objects": objects,
+    }
+
+
+def print_object_depths(report: dict) -> None:
+    if not report["objects"]:
+        print("object_depth: no masks kept, nothing to measure")
+        return
+    for entry in report["objects"]:
+        stats = entry["depth_stats_m"]
+        median = stats["median"]
+        centroid = entry["xyz_centroid_m"]
+        print(
+            f"object[{entry['index']}]"
+            f" depth_m={median if median is None else round(median, 3)}"
+            f" xyz_centroid_m={centroid if centroid is None else [round(v, 3) for v in centroid]}"
+            f" valid_fraction={round(stats['valid_fraction'], 3)}"
+        )
 
 
 def grab_zed_rgb(
@@ -492,8 +588,12 @@ def run_segment(args: argparse.Namespace) -> dict:
                 args,
                 warmup_frames=args.warmup_frames,
             )
+        depth_np, xyz_np, depth_info = retrieve_zed_depth_and_xyz(sl, zed, args.view)
     finally:
         zed.close()
+
+    depth_np, _ = apply_crop(depth_np, args.crop)
+    xyz_np, _ = apply_crop(xyz_np, args.crop)
 
     write_rgb_image(frame_output, rgb_np)
     print(f"wrote_live_frame={frame_output}")
@@ -516,8 +616,15 @@ def run_segment(args: argparse.Namespace) -> dict:
         use_fa3=args.use_fa3,
         verbose_load=args.verbose_load,
     )
-    result = task2.run_once(sam_args, include_kept_masks=args.stereo_warp_mask)
+    result = task2.run_once(sam_args, include_kept_masks=True)
     kept = result.pop("_kept_masks", [])
+    result["object_depth"] = object_depth_report(
+        kept,
+        depth_np=depth_np,
+        xyz_np=xyz_np,
+        view_name=args.view,
+        **depth_info,
+    )
     if args.stereo_warp_mask:
         result["stereo_overlay"] = write_stereo_overlay(
             target_rgb_np=stereo_rgb,
@@ -544,6 +651,7 @@ def run_segment(args: argparse.Namespace) -> dict:
         print(f"wrote_overlay={result['overlay']['output']}")
     if result.get("stereo_overlay") is not None:
         print(f"wrote_stereo_overlay={result['stereo_overlay']['output']}")
+    print_object_depths(result["object_depth"])
     return result
 
 

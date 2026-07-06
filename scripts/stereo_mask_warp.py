@@ -83,10 +83,15 @@ def disparity_measure_name(view_name: str) -> str:
 
 
 def default_shift_sign(view_name: str) -> int:
+    # ZED SDK disparity values are NEGATIVE: both MEASURE.DISPARITY and
+    # MEASURE.DISPARITY_RIGHT store `x_right - x_left` in pixels. So warping
+    # toward the RIGHT view adds the raw value (+1) and warping toward the
+    # LEFT view subtracts it (-1). Verified against template-matched ground
+    # truth on live ZED 2i frames (SDK 5.4.0).
     if view_name == "LEFT":
-        return -1
-    if view_name == "RIGHT":
         return 1
+    if view_name == "RIGHT":
+        return -1
     raise ValueError(f"Unsupported stereo view: {view_name}")
 
 
