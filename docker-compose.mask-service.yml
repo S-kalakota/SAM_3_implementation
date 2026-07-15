@@ -1,0 +1,34 @@
+services:
+  mask_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.mask_service
+    image: sam3-mask-service:thor-arm64
+    container_name: sam3_mask_service
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    privileged: true
+    restart: unless-stopped
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - HOME=/home/team
+      - HF_HOME=/home/team/.cache/huggingface
+      - PYTHONPATH=/home/team/VLA_Model_Work/SAM_3_implementation/scripts:/home/team/.local/lib/python3.12/site-packages
+      - LD_LIBRARY_PATH=/usr/local/zed/lib:/host-libs/aarch64-linux-gnu
+    volumes:
+      - .:/home/team/VLA_Model_Work/SAM_3_implementation:rw
+      - /home/team/.local:/home/team/.local:ro
+      - /home/team/.cache:/home/team/.cache:rw
+      - /usr/local/zed:/usr/local/zed:ro
+      - /usr/lib/aarch64-linux-gnu:/host-libs/aarch64-linux-gnu:ro
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+      - /dev/bus/usb:/dev/bus/usb
+    working_dir: /home/team/VLA_Model_Work/SAM_3_implementation
+    command: >
+      bash -lc '
+        exec .venv/bin/python -u scripts/mask_service.py --host 127.0.0.1 --port 8765 --selection-roi ${MASK_SERVICE_SELECTION_ROI:-430,380,430,170}
+      '
