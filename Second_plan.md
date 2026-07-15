@@ -48,7 +48,12 @@ The through-line that makes all of this cheap to change: **every grasp source pr
 
 Prove we can command the Fairino from code and read back where it is. Nothing vision-related here.
 
-## Task A1: command + read the robot programmatically
+## Task A1: command + read the robot programmatically — DONE (2026-07-15)
+
+**Status:** Complete. The FR5 ROS 2 + MoveIt bringup runs against the real
+robot, a named pose can be commanded from code, live robot state/TCP readback
+works, and MoveIt's planning frame is confirmed as `base_link`.
+
 **Do:**
 - Bring up the Fairino ROS 2 driver + MoveIt stack (or confirm it already runs, and where — Thor or another machine).
 - From a script: move to a safe named pose via MoveIt, then read the live TCP pose back (Fairino SDK `GetActualTCPPose()` or TF `base_link → tool0`).
@@ -57,7 +62,23 @@ Prove we can command the Fairino from code and read back where it is. Nothing vi
 
 **Done when:** one script moves the arm to a safe pose and prints the live TCP pose continuously while you jog it.
 
-## Task A2: pin down TCP + gripper
+## Task A2: pin down TCP + gripper — IN PROGRESS
+
+**Status (2026-07-15):** Gripper I/O and physical characterization are
+complete. The DH PGC140 opens/closes from `a2_gripper.py`. Measured clamp
+geometry:
+
+- Maximum open jaw gap: **0.050 m (50 mm)**.
+- Closed jaw gap: **0.000 m (0 mm)**.
+- Usable jaw stroke (`open gap - closed gap`): **0.050 m (50 mm)**.
+- Finger-pad width: **0.020 m (20 mm)**.
+- Finger-pad length: **0.040 m (40 mm)**.
+
+The fingertip TCP calibration and two-orientation verification remain. A2 is
+complete only after `a2_tcp_calibrate.py --write`, rebuild/relaunch, and
+`a2_tcp_calibrate.py --verify` reports ≤ 3 mm disagreement. Until then,
+`config/tcp_offset.yaml` contains only the provisional offset.
+
 **Do:**
 - Confirm the gripper model and how it opens/closes from code (ROS action? DIO? Modbus?).
 - Measure the **max jaw stroke and finger pad size** — these numbers filter grasp candidates in C2/F5/G2 and decide whether the boxes are even graspable across their short side.
@@ -311,8 +332,8 @@ If/when triggered:
 
 The single ordered path from today to done. Each step is a task above; don't start a step before its predecessor's **Done when** holds (parallel tracks marked).
 
-1. **A1** — command the Fairino from code, read TCP back; record frames + ROS/JetPack versions.
-2. **A2** — TCP offset to fingertip center; gripper I/O; measure jaw stroke.
+1. **A1 — DONE (2026-07-15)** — command the Fairino from code, read TCP back; record frames + ROS/JetPack versions.
+2. **A2 — IN PROGRESS** — gripper I/O and geometry are complete (50 mm stroke, 20 × 40 mm pads); TCP calibration + ≤ 3 mm verification remain.
 3. **B1** — capture 8–12 touch-point pairs across the workspace, varied heights.
 4. **B2** — solve `T_base←cam`, residuals ≤ 8 mm RMS; save JSON.
 5. **B3** — hover validation at 5+ spots, miss ≤ 15 mm.
@@ -340,7 +361,7 @@ The single highest-value day of work is still **Milestone B** — everything aft
 # Open questions (answer these early, they shape A/B/F)
 
 1. Which Fairino model (FR3/FR5/…), and which ROS 2 distro is its driver running on? Same machine as the ZED/SAM stack (the Thor) or a separate PC?
-2. Exact gripper model, actuation API, and **max jaw stroke** (vs the boxes' short-side dimension)?
+2. **Answered:** DH PGC140, commanded through the Fairino remote-command service (`SetGripperConfig` / `ActGripper` / `MoveGripper`); 50 mm usable jaw stroke, 0 mm closed gap, and 20 × 40 mm finger pads. Any grasped box dimension between the pads must be < 50 mm with practical clearance.
 3. Where is the drop zone, and is it fixed?
 4. Is the camera mount final? Every physical change to it invalidates Milestone B (the B4 tripwire catches this, but recalibration still costs an hour).
 5. Which JetPack is the Thor on, and which Isaac ROS release supports it? (Decides F1 versions.)
