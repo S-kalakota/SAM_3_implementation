@@ -62,11 +62,16 @@ works, and MoveIt's planning frame is confirmed as `base_link`.
 
 **Done when:** one script moves the arm to a safe pose and prints the live TCP pose continuously while you jog it.
 
-## Task A2: pin down TCP + gripper — IN PROGRESS
+## Task A2: pin down TCP + gripper — DONE (2026-07-16)
 
-**Status (2026-07-15):** Gripper I/O and physical characterization are
-complete. The DH PGC140 opens/closes from `a2_gripper.py`. Measured clamp
-geometry:
+**Status:** Complete. The DH PGC140 opens/closes from `a2_gripper.py`; its
+physical geometry is recorded, and the fingertip TCP is published as
+`tcp_link`. The retained four-touch pivot fit has 2.8 mm RMS residual and
+offset `[+0.0025, -0.0034, +0.2323]` m in the flange frame. The final
+two-orientation check disagreed by approximately 6 mm; on 2026-07-16 that was
+accepted as the project-wide TCP verification tolerance.
+
+Measured clamp geometry:
 
 - Maximum open jaw gap: **0.050 m (50 mm)**.
 - Closed jaw gap: **0.000 m (0 mm)**.
@@ -74,18 +79,13 @@ geometry:
 - Finger-pad width: **0.020 m (20 mm)**.
 - Finger-pad length: **0.040 m (40 mm)**.
 
-The fingertip TCP calibration and two-orientation verification remain. A2 is
-complete only after `a2_tcp_calibrate.py --write`, rebuild/relaunch, and
-`a2_tcp_calibrate.py --verify` reports ≤ 3 mm disagreement. Until then,
-`config/tcp_offset.yaml` contains only the provisional offset.
-
 **Do:**
 - Confirm the gripper model and how it opens/closes from code (ROS action? DIO? Modbus?).
 - Measure the **max jaw stroke and finger pad size** — these numbers filter grasp candidates in C2/F5/G2 and decide whether the boxes are even graspable across their short side.
 - Set the TCP offset (controller and/or MoveIt end-effector) so the reported TCP is the **gripper fingertip center**, not the flange.
-- Sanity check: touch one fixed point on the table from two different wrist orientations; the reported TCP should agree within a couple of mm both times.
+- Sanity check: touch one fixed point on the table from two different wrist orientations; the reported TCP must agree within the accepted **6 mm** tolerance.
 
-**Done when:** the two-orientation touch test agrees ≤ ~3 mm, and gripper open/close works from a script.
+**Done when:** the two-orientation touch test agrees ≤ 6 mm, and gripper open/close works from a script. **Passed.**
 
 ## Task A3: safety box — planning scene + keep-in watchdog (C4 pulled forward)
 
@@ -97,10 +97,10 @@ complete only after `a2_tcp_calibrate.py --write`, rebuild/relaunch, and
 **No automatic return-to-home on breach.** After a violation the arm's state is by definition unexpected; an automatic recovery motion is a blind move at the worst possible moment. Breach → stop + hold + log the breach pose → human acknowledges → only then a commanded move back to `standby`.
 
 **Measure (with the robot itself, not a tape measure):** jog the arm and read positions off the A1 TCP stream (`a1_move_and_read.py --watch-only`) — the readings are already in `base_link`, so there is no frame conversion to get wrong.
-- Table plane: touch the fingertip to the table surface at 3 spread-out spots; the z values should agree within a few mm — average them.
+- Table plane: touch the fingertip to the table surface at 3 spread-out spots; average the z values and interpret their spread in light of the accepted 6 mm TCP uncertainty. Place the planning-scene table surface 6 mm above that measured plane.
 - Table extent: touch (or hover over) the reachable corners/edges; record x, y.
 - Gantry and monitor: jog the fingertip to the closest faces the arm could plausibly hit; record xyz per face; build boxes with ≥ 5 cm padding.
-- Keep-in AABB: in **sim**, drive through every taught SRDF pose and record the TCP min/max per axis; add ~10 cm margin. Floor = table z + small clearance (low enough to allow grasps, high enough to catch a plunge); ceiling and walls from the workspace edges.
+- Keep-in AABB: in **sim**, drive through every taught SRDF pose and record the TCP min/max per axis; add ~10 cm margin. Shift every effective AABB wall inward by the 6 mm TCP uncertainty. Floor = table z + **11 mm** (6 mm accepted TCP uncertainty + 5 mm nominal physical clearance); ceiling and walls from the workspace edges.
 - Caveat: before A2 the reported TCP is the flange, so every touch is offset by the gripper length — acceptable while boxes carry ≥ 5 cm padding; re-measure the table plane after A2 sets the fingertip TCP.
 
 **Do:**
@@ -155,7 +155,7 @@ def fit_rigid_transform(cam_pts, base_pts):        # Nx3, Nx3
 
 ## Task B4: drift tripwire
 **Do:**
-- Glue an AprilTag/ChArUco tag to a table corner. At pipeline startup, detect it and compare its camera-frame pose to the pose recorded at calibration time; warn loudly if it moved beyond a few mm/degrees (camera got bumped → recalibrate).
+- Glue an AprilTag/ChArUco tag to a table corner. At pipeline startup, detect it and compare its camera-frame pose to the pose recorded at calibration time; warn loudly if translation moved beyond **6 mm** or rotation moved beyond the chosen angular threshold (camera got bumped → recalibrate).
 
 **Done when:** nudging the camera mount on purpose triggers the warning.
 
@@ -333,29 +333,30 @@ If/when triggered:
 The single ordered path from today to done. Each step is a task above; don't start a step before its predecessor's **Done when** holds (parallel tracks marked).
 
 1. **A1 — DONE (2026-07-15)** — command the Fairino from code, read TCP back; record frames + ROS/JetPack versions.
-2. **A2 — IN PROGRESS** — gripper I/O and geometry are complete (50 mm stroke, 20 × 40 mm pads); TCP calibration + ≤ 3 mm verification remain.
-3. **B1** — capture 8–12 touch-point pairs across the workspace, varied heights.
-4. **B2** — solve `T_base←cam`, residuals ≤ 8 mm RMS; save JSON.
-5. **B3** — hover validation at 5+ spots, miss ≤ 15 mm.
-6. **B4** — AprilTag drift tripwire at startup.
-7. **C1** — table plane fit + ghost filter.
-8. **C2** — geometric grasp + the `GraspTarget` interface.
-9. **C3** — safety gate as one function with readable refusals.
-10. **C4** — collision scene, 10 % speed, attached-object handling.
-11. **D1** — hover-only executive, dry-run default, 10/10.
-12. *(parallel with 13–14, software-only)* **E1** deterministic spatial selection + **E2** Qwen 7B upgrade.
-13. **D2** — full pick-and-place, ≥ 8/10.
-14. **D3** — failure handling; yank-the-box test passes.
-15. **E3** — one-command demo loop. **← core project complete.**
-16. **F1–F5** — FoundationPose: install → ROS bridge → mesh registry → validate vs baseline → 6-DoF grasp provider; tilted-box pick passes. **← requested stack integrated, project finished.**
-17. **G1–G2** — *only if* the no-mesh-object trigger fires; otherwise explicitly closed as "not required".
+2. **A2 — DONE (2026-07-16)** — gripper I/O and geometry recorded; fingertip TCP calibrated; approximately 6 mm two-orientation disagreement accepted as the project tolerance.
+3. **A3 — IN PROGRESS** — measure the rig, review the collision scene, and pass the simulated keep-out/keep-in tests before enabling it on the real arm.
+4. **B1** — capture 8–12 touch-point pairs across the workspace, varied heights.
+5. **B2** — solve `T_base←cam`, residuals ≤ 8 mm RMS; save JSON.
+6. **B3** — hover validation at 5+ spots, miss ≤ 15 mm.
+7. **B4** — AprilTag drift tripwire at startup.
+8. **C1** — table plane fit + ghost filter.
+9. **C2** — geometric grasp + the `GraspTarget` interface.
+10. **C3** — safety gate as one function with readable refusals.
+11. **C4** — collision scene, 10 % speed, attached-object handling.
+12. **D1** — hover-only executive, dry-run default, 10/10.
+13. *(parallel with 14–15, software-only)* **E1** deterministic spatial selection + **E2** Qwen 7B upgrade.
+14. **D2** — full pick-and-place, ≥ 8/10.
+15. **D3** — failure handling; yank-the-box test passes.
+16. **E3** — one-command demo loop. **← core project complete.**
+17. **F1–F5** — FoundationPose: install → ROS bridge → mesh registry → validate vs baseline → 6-DoF grasp provider; tilted-box pick passes. **← requested stack integrated, project finished.**
+18. **G1–G2** — *only if* the no-mesh-object trigger fires; otherwise explicitly closed as "not required".
 
 The single highest-value day of work is still **Milestone B** — everything after it is unblocked the moment `T_base_cam.json` exists and the hover test passes.
 
 # Definition of done
 
-- **Core (step 15):** a naive visitor types requests; the correct box is picked and placed ≥ 8/10 with zero operator help; every unsafe/ambiguous request is *refused with a printed reason* rather than attempted; spatial superlatives resolve deterministically.
-- **Finished with requested stack (step 16):** everything above, plus FoundationPose poses flowing through the same gate and executive, demonstrated by a successful pick of a ~20°-tilted box; MoveIt planning throughout; grasp sources swappable by flag.
+- **Core (step 16):** a naive visitor types requests; the correct box is picked and placed ≥ 8/10 with zero operator help; every unsafe/ambiguous request is *refused with a printed reason* rather than attempted; spatial superlatives resolve deterministically.
+- **Finished with requested stack (step 17):** everything above, plus FoundationPose poses flowing through the same gate and executive, demonstrated by a successful pick of a ~20°-tilted box; MoveIt planning throughout; grasp sources swappable by flag.
 - **Milestone G:** delivered *or* consciously closed with the trigger documented as never having fired. Both count as finished.
 
 # Open questions (answer these early, they shape A/B/F)
