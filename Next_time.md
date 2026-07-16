@@ -2,7 +2,8 @@
 
 Session notes, 2026-07-15. Continues `Second_plan.md`. All robot code lives in
 `~/VLA_Model_Work/robot_ws` (package `fr5_bringup`), pushed to
-`github.com/S-kalakota/robot_ws` as two commits (A2 work, A3 scripts).
+`github.com/S-kalakota/cobot_ws` (the current canonical remote; the older
+`S-kalakota/robot_ws` repository contains the same pre-update tree).
 
 ## Completed
 
@@ -17,7 +18,7 @@ Session notes, 2026-07-15. Continues `Second_plan.md`. All robot code lives in
   then re-command `--pose standby --execute` (MoveIt replans from wherever
   the arm is).
 
-### Milestone A2 — gripper + fingertip TCP ✅ (one caveat)
+### Milestone A2 — gripper + fingertip TCP ✅
 - Gripper (DH PGC140) works from code: `a2_gripper.py --open/--close/--pos/--stroke-test`.
   Measured (in `config/gripper.yaml`): max jaw stroke **50 mm**, pads touch at
   0%, pads 20×40 mm. Production grasp settings (from the old Lua program):
@@ -25,11 +26,12 @@ Session notes, 2026-07-15. Continues `Second_plan.md`. All robot code lives in
 - Fingertip TCP calibrated by pivot touches (`a2_tcp_calibrate.py`):
   offset `x 0.0025, y -0.0034, z 0.2323` m in `config/tcp_offset.yaml`,
   4-touch fit, RMS 2.8 mm. TF `base_link → tcp_link` is now the fingertip.
-- **Caveat:** the two-touch verify landed at ~6 mm, not the ≤3 mm target.
-  Accepted for now. If Milestone B's hover test misses by >1 cm, the first fix
-  is refitting the TCP: `a2_tcp_calibrate.py --samples 6 --write` with BIG
-  wrist tilts (~40°) between touches, then rebuild + **restart bringup** +
-  `--verify`.
+- The two-touch verify landed at ~6 mm. On 2026-07-16 this was accepted as the
+  project-wide A2 TCP verification tolerance; A2 is complete. Dependent safety
+  margins must include that 6 mm uncertainty. If Milestone B's hover test
+  misses by >1 cm, the first diagnostic remains refitting the TCP with
+  `a2_tcp_calibrate.py --samples 6 --write`, large wrist tilts (~40°), a
+  bringup restart, and `--verify`.
 
 ### Infrastructure fixed along the way
 - `~/fairino5` was renamed to `~/fairino_ros_connector`; re-pointed the
@@ -41,10 +43,10 @@ Session notes, 2026-07-15. Continues `Second_plan.md`. All robot code lives in
   `robot_ws/src`, backup kept as `*.stale-20260715`). This driver hosts
   `/fairino_remote_command_service` + `/nonrt_state_data` inside
   ros2_control (one shared RPC session — same as production).
-- Updated stale SRDF grab poses were identified but NOT applied: leftGrab /
-  rightGrab were re-taught 2026-07-10 (values in the session notes and in
-  `db/plans.sqlite` endpoints); `fr5.srdf` still has the 07-06 values,
-  ~4° off. Update before using those poses for anything precise.
+- Updated `leftGrab` / `rightGrab` SRDF poses were applied 2026-07-16 from the
+  latest taught start points in `db/plans.sqlite` (`leftgrab_to_leftlift` and
+  `rightgrab_to_rightlift`). The SRDF now matches the trajectories that will be
+  sampled for the A3 keep-in envelope.
 
 ### Hard-won gotchas (read before debugging)
 1. **`tcp_offset.yaml` is baked in at LAUNCH time.** Editing it does nothing
@@ -69,11 +71,15 @@ Three scripts exist, are wired into the bringup, and ship **disabled** via
   4 corner hovers (extent), 2 opposite-corner hovers per obstacle
   (gantry/monitor, +5 cm padding), then keep-in samples (visit named poses —
   can be done in sim). Jog-and-press-Enter, same as calibration; never moves
-  the robot. Run with `--tcp-calibrated` now that A2 passed.
+  the robot. Run with `--tcp-calibrated` now that the 6 mm A2 result is
+  accepted.
 - `a3_planning_scene.py` — publishes the keep-out boxes into MoveIt.
 - `a3_tcp_watchdog.py` — 20 Hz keep-in guard: breach → cancel all motion
   goals → latch until `~/acknowledge` service is called. No auto-recovery by
-  design. Refuses to arm with an uncalibrated TCP.
+  design. Refuses to arm with an uncalibrated TCP. Its table-floor offset is
+  11 mm: 6 mm accepted TCP uncertainty + 5 mm nominal physical clearance.
+  It also shrinks every effective keep-in wall inward by 6 mm, while the table
+  collision surface is padded 6 mm above the measured plane.
 
 ## What's next (in order)
 
