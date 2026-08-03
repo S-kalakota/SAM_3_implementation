@@ -16,8 +16,10 @@ Plan-only sequence (default):
 
 Execution sequence (requires both explicit flags):
   open gripper to 100% -> execute the sequence above, pausing at the offset
-  grasp point to close the gripper to 71%.  The gripper remains at 71% at
-  standby.
+  grasp point to command a 60% jaw target.  The pickup proceeds only when the
+  measured fingers stop at least 8 percentage points more open than requested,
+  indicating that the object blocked closure.  Peak motor current is recorded
+  as supporting evidence.  A failed check reopens before retreating.
   Saved database trajectories are replayed point-for-point with their recorded
   timing; MoveIt is used only for the two short DB-point/hover connections and
   the Cartesian descent/retreat.
@@ -69,8 +71,10 @@ from b3_hover import (ARM_JOINTS, BASE_FRAME, CONTROLLER_GOAL_TOLERANCE_M,
 DEFAULT_TARGET = Path('/tmp/fr5_b3_target.json')
 DEFAULT_PLANS_DB = (Path.home() / 'fairino_ros_connector' /
                     'fairino_ros_controller' / 'db' / 'plans.sqlite')
-CLOSE_PCT = 71
 OPEN_PCT = 100
+DEFAULT_GRASP_CLOSE_PCT = 60
+DEFAULT_MIN_GRASP_POSITION_DELTA_PCT = 8.0
+DEFAULT_MIN_GRASP_CURRENT_PCT = 0.0
 DEFAULT_GRASP_DEPTH_MM = 5.0
 MAX_GRASP_DEPTH_MM = 100.0
 MAX_TARGET_AGE_S = 600.0
@@ -613,6 +617,35 @@ def verify_tcp(node, expected, label):
             f'(limit {CONTROLLER_GOAL_TOLERANCE_M * 1000.0:.1f} mm)')
 
 
+def assess_grasp(result, min_position_delta_pct, min_current_pct):
+    """Return whether measured gripper behavior indicates blocked closure."""
+    if not result.completed:
+        return False, 'gripper motion did not complete'
+    if result.final_position_pct is None:
+        return False, 'no measured final gripper position'
+
+    position_delta = result.final_position_pct - result.target_pct
+    if position_delta < min_position_delta_pct:
+        return False, (
+            f'jaws stopped only {position_delta:.1f} percentage points above '
+            f'the {result.target_pct}% target; required '
+            f'{min_position_delta_pct:.1f}')
+
+    if min_current_pct > 0.0:
+        if result.peak_current_pct is None:
+            return False, 'no gripper-current samples were available'
+        if result.peak_current_pct < min_current_pct:
+            return False, (
+                f'peak current {result.peak_current_pct:.1f}% is below required '
+                f'{min_current_pct:.1f}%')
+
+    current_text = ('unavailable' if result.peak_current_pct is None else
+                    f'{result.peak_current_pct:.1f}%')
+    return True, (
+        f'blocked-closure delta {position_delta:.1f} percentage points; '
+        f'peak current {current_text}')
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -633,6 +666,20 @@ def parse_args(argv=None):
                         help='distance below the clicked surface point for the '
                              f'final TCP target (default: '
                              f'{DEFAULT_GRASP_DEPTH_MM:g} mm; 0 disables)')
+    parser.add_argument('--grasp-close-pct', type=int,
+                        default=DEFAULT_GRASP_CLOSE_PCT,
+                        help='commanded jaw target after descent; 0 is closed '
+                             f'and 100 is open (default: '
+                             f'{DEFAULT_GRASP_CLOSE_PCT})')
+    parser.add_argument('--min-grasp-position-delta-pct', type=float,
+                        default=DEFAULT_MIN_GRASP_POSITION_DELTA_PCT,
+                        help='minimum actual-minus-commanded jaw percentage '
+                             'indicating blocked closure (default: '
+                             f'{DEFAULT_MIN_GRASP_POSITION_DELTA_PCT:g})')
+    parser.add_argument('--min-grasp-current-pct', type=float,
+                        default=DEFAULT_MIN_GRASP_CURRENT_PCT,
+                        help='optional minimum peak motor current; 0 logs '
+                             'current without gating (default: 0)')
     parser.add_argument('--scale', type=float, default=MAX_SCALE,
                         help=f'arm velocity/acceleration scale, max {MAX_SCALE}')
     parser.add_argument('--max-target-age-sec', type=float,
@@ -654,6 +701,18 @@ def parse_args(argv=None):
             args.grasp_depth_mm > MAX_GRASP_DEPTH_MM):
         parser.error('--grasp-depth-mm must be finite and in '
                      f'[0, {MAX_GRASP_DEPTH_MM:g}]')
+    if args.grasp_close_pct < 0 or args.grasp_close_pct >= OPEN_PCT:
+        parser.error('--grasp-close-pct must be an integer in [0, 99]')
+    if (not math.isfinite(args.min_grasp_position_delta_pct) or
+            args.min_grasp_position_delta_pct <= 0.0 or
+            args.grasp_close_pct + args.min_grasp_position_delta_pct >
+            OPEN_PCT):
+        parser.error('--min-grasp-position-delta-pct must be finite, positive, '
+                     'and keep close target + delta <= 100')
+    if (not math.isfinite(args.min_grasp_current_pct) or
+            args.min_grasp_current_pct < 0.0 or
+            args.min_grasp_current_pct > 100.0):
+        parser.error('--min-grasp-current-pct must be finite and in [0, 100]')
     if args.max_target_age_sec <= 0.0 or args.max_target_age_sec > 3600.0:
         parser.error('--max-target-age-sec must be in (0, 3600]')
     if args.execute and not args.confirm_ungated_grab:
@@ -697,7 +756,16 @@ def main(argv=None):
           + ' '.join(f'{value:+.6f}' for value in hover))
     print(f'target age: {target_age_s:.1f} s')
     print(f'proven trajectory database: {plans_db_path}')
-    print(f'gripper: open {OPEN_PCT}% -> close {CLOSE_PCT}% -> hold at standby')
+    minimum_blocked_position = (
+        args.grasp_close_pct + args.min_grasp_position_delta_pct)
+    current_gate = (
+        'logged only' if args.min_grasp_current_pct == 0.0 else
+        f'require >= {args.min_grasp_current_pct:g}%')
+    print(f'gripper: open {OPEN_PCT}% -> command {args.grasp_close_pct}%')
+    print('grasp verification: final position >= '
+          f'{minimum_blocked_position:g}% '
+          f'(blocked by >= {args.min_grasp_position_delta_pct:g} points); '
+          f'peak current {current_gate}')
     print(f'mode: {"EXECUTE - ROBOT WILL MOVE" if args.execute else "PLAN ONLY"}')
     print('WARNING: no table plane, object-height, bin-wall, or environment '
           'collision guard is active.')
@@ -747,6 +815,7 @@ def main(argv=None):
             print('ros2 run fr5_bringup d0_point_grab.py '
                   f'--target-file={target_path} '
                   f'--grasp-depth-mm={args.grasp_depth_mm:g} '
+                  f'--grasp-close-pct={args.grasp_close_pct} '
                   '--execute --confirm-ungated-grab')
             return 0
 
@@ -769,10 +838,20 @@ def main(argv=None):
         node.execute_cartesian(descent, 'straight descent to offset grasp point')
         verify_tcp(node, grasp, 'offset grasp point')
 
-        close_ok = gripper.move(CLOSE_PCT)
-        if not close_ok:
-            print('WARNING: 71% gripper command failed; retreating without '
-                  'assuming a grasp.', file=sys.stderr)
+        close_result = gripper.move_measured(args.grasp_close_pct)
+        grasp_verified, grasp_detail = assess_grasp(
+            close_result, args.min_grasp_position_delta_pct,
+            args.min_grasp_current_pct)
+        verdict = 'PASS' if grasp_verified else 'FAIL'
+        print(f'GRASP VERIFICATION {verdict}: {grasp_detail}')
+        reopened_after_failure = False
+        if not grasp_verified:
+            print('No object was verified between the fingers. Reopening '
+                  'before retreat.', file=sys.stderr)
+            reopened_after_failure = gripper.move(OPEN_PCT)
+            if not reopened_after_failure:
+                print('WARNING: gripper failed to reopen; retreating anyway.',
+                      file=sys.stderr)
 
         retreat, _ = node.compute_cartesian(
             wrist_hover, wrist_quaternion, args.scale,
@@ -786,15 +865,32 @@ def main(argv=None):
         node.execute_saved_plan(grab_to_lift)
         node.execute_saved_plan(lift_to_standby)
 
-        if not close_ok:
+        if not grasp_verified:
             raise HoverError(
-                'arm returned to standby, but the 71% gripper command failed')
-        print('\nPOINT GRAB SEQUENCE PASS: arm is at standby; gripper remains '
-              'commanded to 71%.')
+                'arm returned to standby, but grasp verification failed; '
+                f'gripper reopen '
+                f'{"completed" if reopened_after_failure else "failed"}')
+
+        held_position = gripper.position_pct()
+        held_current = gripper.current_pct()
+        held_current_text = ('?' if held_current is None else
+                             f'{held_current:.1f}')
+        if (held_position is None or
+                held_position < minimum_blocked_position):
+            held_position_text = ('?' if held_position is None else
+                                  f'{held_position:.1f}')
+            raise HoverError(
+                'initial grasp passed, but hold verification at standby failed: '
+                f'position={held_position_text}% (required >= '
+                f'{minimum_blocked_position:g}%), '
+                f'current={held_current_text}%')
+        print('\nPOINT GRAB SEQUENCE PASS: verified object remains between the '
+              f'fingers at standby; position={held_position:.1f}%, '
+              f'current={held_current_text}%.')
     except HoverError as exc:
         print(f'POINT GRAB STOPPED: {exc}', file=sys.stderr)
-        print('No automatic recovery is attempted after a motion error. '
-              'Inspect the arm state and use the e-stop if needed.',
+        print('No further automatic recovery will be attempted. Inspect the '
+              'arm and gripper state and use the e-stop if needed.',
               file=sys.stderr)
         return 2
     except KeyboardInterrupt:

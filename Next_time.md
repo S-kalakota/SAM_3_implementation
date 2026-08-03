@@ -59,36 +59,42 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
   loosening, or repositioning of the camera or robot base requires repeating
   B1–B3 before vision-guided motion resumes.
 
-### Experimental D0 — consistent live grabs at 35 mm depth (2026-08-03)
+### Experimental D0 — measured grasp verification ready to test (2026-08-03)
 - The operator chose to defer C1/C2/C3 temporarily and try one narrow physical
   grab using the already validated click-to-base target.
 - Initial physical attempts planned correctly but passed too high to secure the
-  box. After increasing the depth experimentally, the operator reports that
-  **35 mm below the clicked surface picks up the object consistently**.
+  box. Later tests showed that both 35 mm and 45 mm below the clicked surface
+  succeed only intermittently, so neither depth is accepted as reliable.
 - `d0_point_grab.py` now leaves the hover at 100 mm above the clicked surface
   and accepts `--grasp-depth-mm` from 0–100 mm. Its software default remains
-  5 mm, so use the proven rig setting **`--grasp-depth-mm=35`** explicitly. It
-  reads `plans.sqlite` directly, chooses the nearer left/right DB
+  5 mm; use an explicit trial depth. It reads `plans.sqlite` directly, chooses
+  the nearer left/right DB
   grab endpoint, and replays these recorded trajectories point-for-point with
   their saved timing: `standby_to_*grab`, `*grab_to_*lift`, and
   `*lift_to_standby`. MoveIt is used only for the short DB-grab-point ↔ new
   hover connections. Descent and retreat are straight Cartesian paths capped
-  at 20 mm/s. The gripper opens to 100%, closes to **71%**, and remains at 71%
-  after the final recorded trajectory reaches `standby`.
+  at 20 mm/s.
+- Grasp verification now commands the gripper past the expected box width: the
+  default close target is **60%**, and contact passes only if the measured final
+  position remains at least 8 percentage points more open (>=68%). Peak gripper
+  current is sampled and reported; it is logging-only until successful/failed
+  trials establish a threshold. A failed check reopens at the grasp point,
+  retreats, and returns to `standby`. A passed check is verified again at
+  `standby` to detect a slipped object.
 - Execution is refused unless the live arm is within 0.02 rad of the recorded
   DB standby start. Adjacent saved-trajectory endpoints are validated within
   0.005 rad before any motion; the current DB differs by less than 0.0001 rad.
 - Plan-only is the default. Real execution requires both `--execute` and
   `--confirm-ungated-grab`, plus a target clicked within the last 10 minutes.
-- Build and both left/right full plans pass. A full left-side mock execution
+- Before adding feedback, build and both left/right full plans passed. A full
+  left-side mock execution
   replayed all 228 recorded DB points, reached the selected TCP point, retreated,
-  and returned through the two saved return trajectories to `standby`. Live
-  35 mm-depth trials now pick the object consistently and return to `standby`
-  holding it at the commanded 71% gripper position.
+  and returned through the two saved return trajectories to `standby`. The new
+  measured grasp pass/fail behavior requires its first live validation.
 - This experiment does not complete C1-C3 or D1/D2. There is still no table
   plane, object-height/width check, bin-wall gate, or environment collision
-  scene. The 35 mm setting is an experimentally determined fixed depth, not an
-  automatic object-center or support-plane-aware grasp calculation.
+  scene. Gripper feedback detects blocked closure but does not measure contact
+  with the gripper back or automatically correct grasp depth.
 
 ### Infrastructure fixed along the way
 - `~/fairino5` was renamed to `~/fairino_ros_connector`; re-pointed the
@@ -135,27 +141,29 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
 
 ## What's next (in order)
 
-1. **Repeat the working D0 live grab:** click the box, run the complete sequence
-   at the proven 35 mm depth plan-only, inspect it, then explicitly execute it:
+1. **Validate measured grasp detection:** click the box, plan at a trial depth,
+   then execute while recording the reported final position and peak current:
 
    ```bash
    ros2 launch fr5_bringup a1_bringup.launch.py sim:=false
    ros2 run fr5_bringup b3_pick_point.py
    ros2 run fr5_bringup d0_point_grab.py \
-     --target-file=/tmp/fr5_b3_target.json --grasp-depth-mm=35
+     --target-file=/tmp/fr5_b3_target.json --grasp-depth-mm=35 \
+     --grasp-close-pct=60
    ros2 run fr5_bringup d0_point_grab.py \
      --target-file=/tmp/fr5_b3_target.json --grasp-depth-mm=35 \
+     --grasp-close-pct=60 \
      --execute --confirm-ungated-grab
    ros2 run fr5_bringup a2_gripper.py --open
    ```
 
    The arm must start at the recorded DB standby point. Stop unless preflight
    reports three validated DB trajectories plus four planned new segments.
-   Keep the full path clear and a hand on the e-stop. The box remains held at
-   71% when the saved return choreography reaches `standby`.
-2. **Characterize reliability:** record the number of 35 mm-depth attempts and
-   successful pickups rather than relying only on the qualitative
-   "consistently" result.
+   Keep the full path clear and a hand on the e-stop. Require `GRASP
+   VERIFICATION PASS` before treating the pickup as successful.
+2. **Calibrate feedback:** record final position and peak current for several
+   known successful and empty/failed closes, then set a nonzero
+   `--min-grasp-current-pct` only if the distributions separate reliably.
 3. **Deferred, not complete:** C1 support geometry, C2 `GraspTarget`, and C3
    safety gating remain the path from this experiment to a repeatable picker.
 

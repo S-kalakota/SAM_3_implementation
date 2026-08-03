@@ -167,7 +167,7 @@ physical repositioning of the camera or robot base invalidates
 
 # Milestone C: grasp geometry + safety
 
-## Experimental D0 override — CONSISTENT LIVE GRABS AT 35 MM (2026-08-03)
+## Experimental D0 override — MEASURED GRASP CHECK READY (2026-08-03)
 
 The operator chose to defer C1-C3 temporarily for constrained physical trials.
 `d0_point_grab.py` consumes the fresh target from `b3_pick_point.py`,
@@ -175,20 +175,21 @@ reads the current `plans.sqlite` directly, and chooses the nearer left/right DB
 grab endpoint. It replays the exact recorded `standby_to_*grab` path, uses
 MoveIt only for the short DB-grab-point ↔ clicked-hover connections, executes
 the straight Cartesian descent/retreat, then replays the exact recorded
-`*grab_to_*lift` and `*lift_to_standby` paths. It opens to 100%, closes to 71%
-at the grasp target, and holds 71% at `standby`. Shallower physical trials
-planned correctly but missed the box high. The operator reports that a final
-TCP target **35 mm below the clicked surface** picks the object consistently;
-the command must include `--grasp-depth-mm=35` because the software default
-remains 5 mm. The original 100 mm hover is unchanged. Execution requires the
-arm at the recorded standby start, `--execute --confirm-ungated-grab`, and a
-click no more than 10 minutes old.
+`*grab_to_*lift` and `*lift_to_standby` paths. Physical trials at both 35 mm and
+45 mm below the clicked surface succeed only intermittently. D0 now opens to
+100%, commands a 60% close target, and treats the object as detected only when
+the measured fingers remain at least 8 percentage points more open than the
+command. Peak motor current is recorded as supporting evidence. A failed check
+reopens before retreating and returns to `standby`; a passed check is verified
+again at `standby` for slip. The original 100 mm hover is unchanged. Execution
+requires the arm at the recorded standby start,
+`--execute --confirm-ungated-grab`, and a click no more than 10 minutes old.
 
 This is an explicit ordering exception, not completion of the skipped work.
 There is no table/floor plane, object-height or jaw-width check, bin-wall gate,
-or environment collision scene. The working 35 mm depth is fixed and
-experimental; it is not an automatic object-center or support-plane-aware
-grasp calculation. At `standby`, release with
+or environment collision scene. This detects an object blocking the fingers;
+it does not detect contact with the gripper back or automatically determine the
+correct depth. At `standby`, release with
 `ros2 run fr5_bringup a2_gripper.py --open`.
 
 ## Task C1: table plane
@@ -363,12 +364,12 @@ The single ordered path from today to done. Each step is a task above; don't sta
 4. **B1 — DONE (2026-07-16)** — captured 8 touch-point pairs across the workspace at varied heights.
 5. **B2 — DONE (2026-07-16)** — solved and saved `T_base←cam`; 7.532 mm RMS, 12.358 mm maximum residual; static TF integrated into bringup.
 6. **B3 — DONE (2026-07-17)** — five camera-selected bin points validated with the separated 100 mm, ≤5%-speed hover workflow; X/Y accuracy accepted within the 15 mm tolerance.
-   **Immediate ordering exception (2026-08-03): D0 LIVE GRAB WORKING AT 35 MM**
-   — clicked-point open/descend/close-71%/retreat/standby trials run before
+   **Immediate ordering exception (2026-08-03): D0 MEASURED GRASP CHECK READY**
+   — clicked-point open/descend/verified-close/retreat/standby trials run before
    C1-C3. Fixed motion replays the proven `plans.sqlite` trajectories exactly;
-   only the DB-endpoint ↔ clicked-point motion is newly planned. Shallower
-   attempts missed high; the operator reports consistent pickups with
-   `--grasp-depth-mm=35`.
+   only the DB-endpoint ↔ clicked-point motion is newly planned. Both 35 mm and
+   45 mm depths have been intermittent; blocked-closure position and current
+   measurements are the next live test.
 7. **C1 — DEFERRED, NOT COMPLETE** — table/support-plane fit + ghost filter.
 8. **C2** — geometric grasp + the `GraspTarget` interface.
 9. **C3** — safety gate as one function with readable refusals.

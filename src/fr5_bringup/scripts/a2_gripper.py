@@ -31,6 +31,7 @@ what to record in config/gripper.yaml (consumed later by C2's width gate).
 import argparse
 import sys
 import time
+from dataclasses import dataclass
 
 import rclpy
 from rclpy.node import Node
@@ -42,6 +43,17 @@ GRIPPER_IDX = 1                 # Fairino gripper bus index (production value)
 GRIPPER_VENDOR_CFG = "SetGripperConfig(4,0,0,0)"   # DH/Dahuan PGC/PGI series
 SERVICE = "fairino_remote_command_service"
 MOVE_TIMEOUT_S = 10.0
+
+
+@dataclass(frozen=True)
+class GripperMotionResult:
+    """Measured result of one gripper position command."""
+
+    target_pct: int
+    completed: bool
+    final_position_pct: float | None
+    peak_current_pct: float | None
+    sample_count: int
 
 
 class GripperNode(Node):
@@ -116,9 +128,8 @@ class GripperNode(Node):
     def current_pct(self):
         return self.query_csv(f'GetGripperCurCurrent({GRIPPER_IDX})')
 
-    def move(self, pct, wait=True):
-        """Command a jaw position; on rejection re-activate and retry once
-        (activation drops after ResetAllError / power cycles — error 73)."""
+    def _send_move(self, pct):
+        """Send one move, re-activating and retrying once on rejection."""
         pct = int(max(0, min(100, pct)))
         if not self.call_ok(f'MoveGripper({GRIPPER_IDX},{pct})'):
             print('MoveGripper rejected — re-activating and retrying once...')
@@ -126,42 +137,67 @@ class GripperNode(Node):
                 return False
             if not self.call_ok(f'MoveGripper({GRIPPER_IDX},{pct})'):
                 return False
+        return True
+
+    def move(self, pct, wait=True):
+        """Command a jaw position; return whether the motion completed."""
+        pct = int(max(0, min(100, pct)))
+        if not self._send_move(pct):
+            return False
         if not wait:
             return True
-        return self._wait_motion_done(pct)
+        return self._wait_motion_result(pct).completed
 
-    def _wait_motion_done(self, target_pct):
+    def move_measured(self, pct):
+        """Command a jaw position and retain position/current observations."""
+        pct = int(max(0, min(100, pct)))
+        if not self._send_move(pct):
+            return GripperMotionResult(pct, False, None, None, 0)
+        return self._wait_motion_result(pct)
+
+    def _wait_motion_result(self, target_pct):
         """Prefer grip_motion_done from nonrt_state_data; fall back to
-        position-stability polling if the flag is quiet or stale."""
+        position stability. Capture actual position and peak motor current."""
         grace = time.monotonic() + 0.5   # let grip_motion_done drop post-command
         deadline = time.monotonic() + MOVE_TIMEOUT_S
-        last_pos, stable = None, 0
+        last_pos, peak_current, stable, sample_count = None, None, 0, 0
         while time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.05)
-            if (time.monotonic() > grace and self.nonrt is not None
-                    and self.nonrt.grip_motion_done):
-                pos = self.position_pct()
-                print(f'done: position={pos if pos is not None else "?"}% '
-                      f'(commanded {target_pct}%)')
-                return True
-            time.sleep(0.15)
+            time.sleep(0.10)
             pos = self.position_pct()
-            if pos is None:
-                continue
-            if last_pos is not None and abs(pos - last_pos) < 0.5:
-                stable += 1
-                # no nonrt topic: 3 stable reads is enough; with the topic
-                # present trust position anyway after ~2 s (stale flag guard)
-                if stable >= (3 if self.nonrt is None else 10):
-                    print(f'done (position stable): {pos:.0f}% '
-                          f'(commanded {target_pct}%)')
-                    return True
-            else:
-                stable = 0
-            last_pos = pos
+            current = self.current_pct()
+            sample_count += 1
+            if current is not None:
+                peak_current = (current if peak_current is None else
+                                max(peak_current, current))
+            if pos is not None:
+                if last_pos is not None and abs(pos - last_pos) < 0.5:
+                    stable += 1
+                else:
+                    stable = 0
+                last_pos = pos
+
+            motion_done = (
+                time.monotonic() > grace and self.nonrt is not None
+                and bool(self.nonrt.grip_motion_done))
+            stable_done = (
+                last_pos is not None
+                and stable >= (3 if self.nonrt is None else 10))
+            if motion_done or stable_done:
+                mode = 'motion done' if motion_done else 'position stable'
+                pos_text = '?' if last_pos is None else f'{last_pos:.1f}'
+                current_text = ('?' if peak_current is None else
+                                f'{peak_current:.1f}')
+                print(f'done ({mode}): position={pos_text}% '
+                      f'(commanded {target_pct}%), '
+                      f'peak current={current_text}%')
+                return GripperMotionResult(
+                    target_pct, True, last_pos, peak_current, sample_count)
         print(f'TIMED OUT after {MOVE_TIMEOUT_S}s '
-              f'(last position: {last_pos})', file=sys.stderr)
-        return False
+              f'(last position: {last_pos}, peak current: {peak_current})',
+              file=sys.stderr)
+        return GripperMotionResult(
+            target_pct, False, last_pos, peak_current, sample_count)
 
     def print_status(self):
         pos = self.position_pct()
