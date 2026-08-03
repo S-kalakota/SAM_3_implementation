@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Experimental clicked-point grab, deliberately skipping Milestone C1-C3.
 
-The input is the fresh target file written by ``b3_pick_point.py``.  The
-selected camera point is treated as the exact fingertip TCP grasp position;
-no table plane, object height, grasp-width, or bin-wall safety gate is applied.
+The input is the fresh target file written by ``b3_pick_point.py``.  The TCP
+grasp position defaults to 5 mm below the selected camera surface point; no
+table plane, object height, grasp-width, or bin-wall safety gate is applied.
 
 Plan-only sequence (default):
   validate current state at the saved standby start
   -> exact DB standby_to_{left|right}grab trajectory
   -> short new plan from the DB grab endpoint to the 100 mm TCP hover
-  -> straight descent to selected point -> straight retreat
+  -> straight descent to offset grasp point -> straight retreat
   -> short new plan back to the DB grab point
   -> exact DB {left|right}grab_to_{left|right}lift trajectory
   -> exact DB {left|right}lift_to_standby trajectory
 
 Execution sequence (requires both explicit flags):
-  open gripper to 100% -> execute the sequence above, pausing at the selected
-  point to close the gripper to 71%.  The gripper remains at 71% at standby.
+  open gripper to 100% -> execute the sequence above, pausing at the offset
+  grasp point to close the gripper to 71%.  The gripper remains at 71% at
+  standby.
   Saved database trajectories are replayed point-for-point with their recorded
   timing; MoveIt is used only for the two short DB-point/hover connections and
   the Cartesian descent/retreat.
@@ -70,6 +71,8 @@ DEFAULT_PLANS_DB = (Path.home() / 'fairino_ros_connector' /
                     'fairino_ros_controller' / 'db' / 'plans.sqlite')
 CLOSE_PCT = 71
 OPEN_PCT = 100
+DEFAULT_GRASP_DEPTH_MM = 5.0
+MAX_GRASP_DEPTH_MM = 100.0
 MAX_TARGET_AGE_S = 600.0
 CARTESIAN_STEP_M = 0.005
 CARTESIAN_SPEED_M_S = 0.020
@@ -586,7 +589,7 @@ def preflight(node, hover, wrist_hover, wrist_grasp, wrist_quaternion,
         f'new {inbound.name} endpoint -> clicked hover', state)
     _, state = node.compute_cartesian(
         wrist_grasp, wrist_quaternion, scale,
-        'straight descent to selected point', state)
+        'straight descent to offset grasp point', state)
     _, state = node.compute_cartesian(
         wrist_hover, wrist_quaternion, scale,
         'straight retreat to hover', state)
@@ -625,6 +628,11 @@ def parse_args(argv=None):
                         default='auto',
                         help='DB choreography side (default: nearest DB grab '
                              'endpoint)')
+    parser.add_argument('--grasp-depth-mm', type=float,
+                        default=DEFAULT_GRASP_DEPTH_MM,
+                        help='distance below the clicked surface point for the '
+                             f'final TCP target (default: '
+                             f'{DEFAULT_GRASP_DEPTH_MM:g} mm; 0 disables)')
     parser.add_argument('--scale', type=float, default=MAX_SCALE,
                         help=f'arm velocity/acceleration scale, max {MAX_SCALE}')
     parser.add_argument('--max-target-age-sec', type=float,
@@ -641,6 +649,11 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.scale <= 0.0 or args.scale > MAX_SCALE:
         parser.error(f'--scale must be in (0, {MAX_SCALE}]')
+    if (not math.isfinite(args.grasp_depth_mm) or
+            args.grasp_depth_mm < 0.0 or
+            args.grasp_depth_mm > MAX_GRASP_DEPTH_MM):
+        parser.error('--grasp-depth-mm must be finite and in '
+                     f'[0, {MAX_GRASP_DEPTH_MM:g}]')
     if args.max_target_age_sec <= 0.0 or args.max_target_age_sec > 3600.0:
         parser.error('--max-target-age-sec must be in (0, 3600]')
     if args.execute and not args.confirm_ungated_grab:
@@ -672,9 +685,13 @@ def main(argv=None):
         return 2
 
     grasp = surface.copy()
-    hover = grasp + np.asarray([0.0, 0.0, HOVER_M])
+    grasp[2] -= args.grasp_depth_mm / 1000.0
+    hover = surface + np.asarray([0.0, 0.0, HOVER_M])
     print('\n=== EXPERIMENTAL CLICKED-POINT GRAB ===')
-    print('selected TCP grasp point [base_link, m]: '
+    print('selected surface point [base_link, m]: '
+          + ' '.join(f'{value:+.6f}' for value in surface))
+    print(f'grasp depth correction: {args.grasp_depth_mm:.1f} mm downward')
+    print('offset TCP grasp point [base_link, m]: '
           + ' '.join(f'{value:+.6f}' for value in grasp))
     print('TCP hover point [base_link, m]: '
           + ' '.join(f'{value:+.6f}' for value in hover))
@@ -697,12 +714,12 @@ def main(argv=None):
         current_tcp = node.actual_tcp()
         print('current TCP [base_link, m]: '
               + ' '.join(f'{value:+.6f}' for value in current_tcp))
-        required_z = grasp[2] + EXECUTE_CLEARANCE_M
+        required_z = surface[2] + EXECUTE_CLEARANCE_M
         if current_tcp[2] < required_z:
             message = (
                 f'current TCP z={current_tcp[2]:.3f} m is not at least '
                 f'{EXECUTE_CLEARANCE_M * 1000.0:.0f} mm above selected '
-                f'z={grasp[2]:.3f} m')
+                f'surface z={surface[2]:.3f} m')
             if args.execute:
                 raise HoverError(message)
             print(f'PLAN-ONLY WARNING: {message}')
@@ -729,6 +746,7 @@ def main(argv=None):
             print('\nNO MOTION OCCURRED. Re-click if the box moved, then run:')
             print('ros2 run fr5_bringup d0_point_grab.py '
                   f'--target-file={target_path} '
+                  f'--grasp-depth-mm={args.grasp_depth_mm:g} '
                   '--execute --confirm-ungated-grab')
             return 0
 
@@ -747,9 +765,9 @@ def main(argv=None):
 
         descent, _ = node.compute_cartesian(
             wrist_grasp, wrist_quaternion, args.scale,
-            'straight descent to selected point')
-        node.execute_cartesian(descent, 'straight descent to selected point')
-        verify_tcp(node, grasp, 'selected point')
+            'straight descent to offset grasp point')
+        node.execute_cartesian(descent, 'straight descent to offset grasp point')
+        verify_tcp(node, grasp, 'offset grasp point')
 
         close_ok = gripper.move(CLOSE_PCT)
         if not close_ok:
