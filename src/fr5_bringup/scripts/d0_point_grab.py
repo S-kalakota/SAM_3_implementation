@@ -19,10 +19,15 @@ Execution sequence (requires both explicit flags):
   grasp point to command a 60% jaw target.  The pickup proceeds only when the
   measured fingers stop at least 8 percentage points more open than requested,
   indicating that the object blocked closure.  Peak motor current is recorded
-  as supporting evidence.  A failed check reopens before retreating.
+  as supporting evidence.  A clean empty close reopens, retreats to hover,
+  resets through the selected proven DB left/right grab pose, returns to the
+  clicked hover, and retries once 5 mm deeper by default.  It does not return
+  to standby between attempts.  Faults and ambiguous feedback do not trigger a
+  deeper retry.  Every attempt emits one structured result record so a future
+  VLA policy can consume the same observation/action/outcome loop.
   Saved database trajectories are replayed point-for-point with their recorded
-  timing; MoveIt is used only for the two short DB-point/hover connections and
-  the Cartesian descent/retreat.
+  timing; MoveIt is used only for the short DB-point/hover connections and the
+  Cartesian descent/retreat.
 
 This is a narrow live trial, not the completed pick executive.  MoveIt has no
 environment collision scene.  Use a freshly clicked point on the box, inspect
@@ -76,7 +81,11 @@ DEFAULT_GRASP_CLOSE_PCT = 60
 DEFAULT_MIN_GRASP_POSITION_DELTA_PCT = 8.0
 DEFAULT_MIN_GRASP_CURRENT_PCT = 0.0
 DEFAULT_GRASP_DEPTH_MM = 5.0
+DEFAULT_GRASP_RETRIES = 1
+DEFAULT_RETRY_STEP_MM = 5.0
 MAX_GRASP_DEPTH_MM = 100.0
+MAX_GRASP_RETRIES = 3
+MAX_RETRY_STEP_MM = 20.0
 MAX_TARGET_AGE_S = 600.0
 CARTESIAN_STEP_M = 0.005
 CARTESIAN_SPEED_M_S = 0.020
@@ -578,8 +587,8 @@ class PointGrabNode(B3HoverNode):
         return message_translation(transform.transform.translation)
 
 
-def preflight(node, hover, wrist_hover, wrist_grasp, wrist_quaternion,
-              tcp_offset, plans, scale):
+def preflight(node, hover, wrist_hover, wrist_grasp_targets,
+              attempt_depths_mm, wrist_quaternion, tcp_offset, plans, scale):
     inbound, grab_to_lift, lift_to_standby = plans
     print('\nPreflight validating DB choreography and planning only the new links:')
     node.verify_saved_plan_start(inbound)
@@ -591,17 +600,34 @@ def preflight(node, hover, wrist_hover, wrist_grasp, wrist_quaternion,
     _, state = node.plan_tcp_pose(
         hover, wrist_quaternion, tcp_offset, False, scale,
         f'new {inbound.name} endpoint -> clicked hover', state)
-    _, state = node.compute_cartesian(
-        wrist_grasp, wrist_quaternion, scale,
-        'straight descent to offset grasp point', state)
-    _, state = node.compute_cartesian(
-        wrist_hover, wrist_quaternion, scale,
-        'straight retreat to hover', state)
+    attempt_count = len(wrist_grasp_targets)
+    for attempt_number, (depth_mm, wrist_grasp) in enumerate(
+            zip(attempt_depths_mm, wrist_grasp_targets), start=1):
+        _, state = node.compute_cartesian(
+            wrist_grasp, wrist_quaternion, scale,
+            f'attempt {attempt_number}/{attempt_count} straight descent '
+            f'({depth_mm:g} mm depth)', state)
+        _, state = node.compute_cartesian(
+            wrist_hover, wrist_quaternion, scale,
+            f'attempt {attempt_number}/{attempt_count} straight retreat '
+            'to hover', state)
+        if attempt_number < attempt_count:
+            _, state = node.plan_joint_pose(
+                joint_map(grab_to_lift.start), False, scale,
+                f'retry reset: clicked hover -> DB '
+                f'{grab_to_lift.name} start', state)
+            _, state = node.plan_tcp_pose(
+                hover, wrist_quaternion, tcp_offset, False, scale,
+                f'retry re-approach: DB {grab_to_lift.name} start -> '
+                'clicked hover', state)
     node.plan_joint_pose(
         joint_map(grab_to_lift.start), False, scale,
         f'new clicked hover -> DB {grab_to_lift.name} start', state)
-    print('PREFLIGHT PASS: three exact DB trajectories validated and all four '
-          'new motion segments planned.')
+    segment_count = 2 + 2 * attempt_count + 2 * (attempt_count - 1)
+    print('PREFLIGHT PASS: three exact DB trajectories validated and all '
+          f'{segment_count} new motion segments planned '
+          f'({attempt_count} grasp attempt'
+          f'{"" if attempt_count == 1 else "s"}).')
 
 
 def verify_tcp(node, expected, label):
@@ -623,6 +649,8 @@ def assess_grasp(result, min_position_delta_pct, min_current_pct):
         return False, 'gripper motion did not complete'
     if result.final_position_pct is None:
         return False, 'no measured final gripper position'
+    if not math.isfinite(result.final_position_pct):
+        return False, 'measured final gripper position is non-finite'
 
     position_delta = result.final_position_pct - result.target_pct
     if position_delta < min_position_delta_pct:
@@ -634,6 +662,8 @@ def assess_grasp(result, min_position_delta_pct, min_current_pct):
     if min_current_pct > 0.0:
         if result.peak_current_pct is None:
             return False, 'no gripper-current samples were available'
+        if not math.isfinite(result.peak_current_pct):
+            return False, 'measured peak gripper current is non-finite'
         if result.peak_current_pct < min_current_pct:
             return False, (
                 f'peak current {result.peak_current_pct:.1f}% is below required '
@@ -644,6 +674,56 @@ def assess_grasp(result, min_position_delta_pct, min_current_pct):
     return True, (
         f'blocked-closure delta {position_delta:.1f} percentage points; '
         f'peak current {current_text}')
+
+
+def is_retryable_empty_close(result, min_position_delta_pct):
+    """Return True only for a completed, measured close with no obstruction."""
+    if (not result.completed or result.final_position_pct is None or
+            not math.isfinite(result.final_position_pct)):
+        return False
+    return (result.final_position_pct - result.target_pct <
+            min_position_delta_pct)
+
+
+def grasp_depths(initial_depth_mm, retry_count, retry_step_mm):
+    """Return the bounded sequence of grasp depths for all allowed attempts."""
+    return [initial_depth_mm + attempt * retry_step_mm
+            for attempt in range(retry_count + 1)]
+
+
+def print_attempt_result(attempt_number, attempt_count, depth_mm, result,
+                         verified, retryable, detail):
+    """Emit a stable machine-readable observation for a future VLA executive."""
+    if verified:
+        outcome = 'grasp_verified'
+    elif retryable:
+        outcome = 'empty_close'
+    else:
+        outcome = 'ambiguous_or_fault'
+    final_position = result.final_position_pct
+    if final_position is not None and not math.isfinite(final_position):
+        final_position = None
+    peak_current = result.peak_current_pct
+    if peak_current is not None and not math.isfinite(peak_current):
+        peak_current = None
+    payload = {
+        'schema': 'fr5.grasp_attempt.v1',
+        'attempt': attempt_number,
+        'attempts_allowed': attempt_count,
+        'action': {
+            'grasp_depth_mm': round(float(depth_mm), 3),
+            'grasp_close_pct': result.target_pct,
+        },
+        'observation': {
+            'motion_completed': bool(result.completed),
+            'final_position_pct': final_position,
+            'peak_current_pct': peak_current,
+            'sample_count': result.sample_count,
+        },
+        'outcome': outcome,
+        'detail': detail,
+    }
+    print('GRASP_ATTEMPT_RESULT ' + json.dumps(payload, sort_keys=True))
 
 
 def parse_args(argv=None):
@@ -680,6 +760,16 @@ def parse_args(argv=None):
                         default=DEFAULT_MIN_GRASP_CURRENT_PCT,
                         help='optional minimum peak motor current; 0 logs '
                              'current without gating (default: 0)')
+    parser.add_argument('--grasp-retries', type=int,
+                        default=DEFAULT_GRASP_RETRIES,
+                        help='number of deeper retries after a verified empty '
+                             f'close (default: {DEFAULT_GRASP_RETRIES}; max: '
+                             f'{MAX_GRASP_RETRIES})')
+    parser.add_argument('--retry-step-mm', type=float,
+                        default=DEFAULT_RETRY_STEP_MM,
+                        help='additional depth for each retry (default: '
+                             f'{DEFAULT_RETRY_STEP_MM:g} mm; max: '
+                             f'{MAX_RETRY_STEP_MM:g} mm)')
     parser.add_argument('--scale', type=float, default=MAX_SCALE,
                         help=f'arm velocity/acceleration scale, max {MAX_SCALE}')
     parser.add_argument('--max-target-age-sec', type=float,
@@ -713,6 +803,19 @@ def parse_args(argv=None):
             args.min_grasp_current_pct < 0.0 or
             args.min_grasp_current_pct > 100.0):
         parser.error('--min-grasp-current-pct must be finite and in [0, 100]')
+    if args.grasp_retries < 0 or args.grasp_retries > MAX_GRASP_RETRIES:
+        parser.error(f'--grasp-retries must be in [0, {MAX_GRASP_RETRIES}]')
+    if (not math.isfinite(args.retry_step_mm) or
+            args.retry_step_mm <= 0.0 or
+            args.retry_step_mm > MAX_RETRY_STEP_MM):
+        parser.error('--retry-step-mm must be finite and in '
+                     f'(0, {MAX_RETRY_STEP_MM:g}]')
+    deepest_depth_mm = (
+        args.grasp_depth_mm + args.grasp_retries * args.retry_step_mm)
+    if deepest_depth_mm > MAX_GRASP_DEPTH_MM:
+        parser.error('initial depth plus retries reaches '
+                     f'{deepest_depth_mm:g} mm; maximum allowed grasp depth is '
+                     f'{MAX_GRASP_DEPTH_MM:g} mm')
     if args.max_target_age_sec <= 0.0 or args.max_target_age_sec > 3600.0:
         parser.error('--max-target-age-sec must be in (0, 3600]')
     if args.execute and not args.confirm_ungated_grab:
@@ -743,8 +846,14 @@ def main(argv=None):
         print(f'POINT GRAB REFUSED: {exc}', file=sys.stderr)
         return 2
 
-    grasp = surface.copy()
-    grasp[2] -= args.grasp_depth_mm / 1000.0
+    attempt_depths_mm = grasp_depths(
+        args.grasp_depth_mm, args.grasp_retries, args.retry_step_mm)
+    grasp_targets = []
+    for depth_mm in attempt_depths_mm:
+        target = surface.copy()
+        target[2] -= depth_mm / 1000.0
+        grasp_targets.append(target)
+    grasp = grasp_targets[0]
     hover = surface + np.asarray([0.0, 0.0, HOVER_M])
     print('\n=== EXPERIMENTAL CLICKED-POINT GRAB ===')
     print('selected surface point [base_link, m]: '
@@ -752,6 +861,15 @@ def main(argv=None):
     print(f'grasp depth correction: {args.grasp_depth_mm:.1f} mm downward')
     print('offset TCP grasp point [base_link, m]: '
           + ' '.join(f'{value:+.6f}' for value in grasp))
+    if args.grasp_retries:
+        print('retry policy: '
+              f'{args.grasp_retries} deeper retr'
+              f'{"y" if args.grasp_retries == 1 else "ies"}, '
+              f'{args.retry_step_mm:g} mm per retry; attempt depths '
+              + ', '.join(f'{depth:g}' for depth in attempt_depths_mm)
+              + ' mm')
+    else:
+        print('retry policy: disabled')
     print('TCP hover point [base_link, m]: '
           + ' '.join(f'{value:+.6f}' for value in hover))
     print(f'target age: {target_age_s:.1f} s')
@@ -802,20 +920,26 @@ def main(argv=None):
 
         wrist_hover, wrist_quaternion, tcp_offset = node.desired_wrist_pose(
             hover, tcp_quaternion)
-        wrist_grasp, grasp_wrist_quaternion, _ = node.desired_wrist_pose(
-            grasp, tcp_quaternion)
-        if not np.allclose(wrist_quaternion, grasp_wrist_quaternion,
-                           atol=1e-9):
-            raise HoverError('internal wrist-orientation mismatch')
+        wrist_grasp_targets = []
+        for target in grasp_targets:
+            wrist_grasp, grasp_wrist_quaternion, _ = node.desired_wrist_pose(
+                target, tcp_quaternion)
+            if not np.allclose(wrist_quaternion, grasp_wrist_quaternion,
+                               atol=1e-9):
+                raise HoverError('internal wrist-orientation mismatch')
+            wrist_grasp_targets.append(wrist_grasp)
 
-        preflight(node, hover, wrist_hover, wrist_grasp, wrist_quaternion,
-                  tcp_offset, plans, args.scale)
+        preflight(node, hover, wrist_hover, wrist_grasp_targets,
+                  attempt_depths_mm, wrist_quaternion, tcp_offset, plans,
+                  args.scale)
         if not args.execute:
             print('\nNO MOTION OCCURRED. Re-click if the box moved, then run:')
             print('ros2 run fr5_bringup d0_point_grab.py '
                   f'--target-file={target_path} '
                   f'--grasp-depth-mm={args.grasp_depth_mm:g} '
                   f'--grasp-close-pct={args.grasp_close_pct} '
+                  f'--grasp-retries={args.grasp_retries} '
+                  f'--retry-step-mm={args.retry_step_mm:g} '
                   '--execute --confirm-ungated-grab')
             return 0
 
@@ -832,32 +956,82 @@ def main(argv=None):
             f'new {inbound.name} endpoint -> clicked hover')
         verify_tcp(node, hover, 'hover')
 
-        descent, _ = node.compute_cartesian(
-            wrist_grasp, wrist_quaternion, args.scale,
-            'straight descent to offset grasp point')
-        node.execute_cartesian(descent, 'straight descent to offset grasp point')
-        verify_tcp(node, grasp, 'offset grasp point')
+        grasp_verified = False
+        grasp_detail = 'no grasp attempt completed'
+        last_reopen_completed = None
+        attempts_completed = 0
+        attempt_count = len(grasp_targets)
+        for attempt_index, (depth_mm, target, wrist_target) in enumerate(
+                zip(attempt_depths_mm, grasp_targets, wrist_grasp_targets)):
+            attempt_number = attempt_index + 1
+            attempts_completed = attempt_number
+            print(f'\nGRASP ATTEMPT {attempt_number}/{attempt_count}: '
+                  f'depth={depth_mm:g} mm')
+            descent_label = (
+                f'attempt {attempt_number}/{attempt_count} straight descent '
+                f'({depth_mm:g} mm depth)')
+            descent, _ = node.compute_cartesian(
+                wrist_target, wrist_quaternion, args.scale, descent_label)
+            node.execute_cartesian(descent, descent_label)
+            verify_tcp(node, target,
+                       f'attempt {attempt_number} grasp point')
 
-        close_result = gripper.move_measured(args.grasp_close_pct)
-        grasp_verified, grasp_detail = assess_grasp(
-            close_result, args.min_grasp_position_delta_pct,
-            args.min_grasp_current_pct)
-        verdict = 'PASS' if grasp_verified else 'FAIL'
-        print(f'GRASP VERIFICATION {verdict}: {grasp_detail}')
-        reopened_after_failure = False
-        if not grasp_verified:
-            print('No object was verified between the fingers. Reopening '
-                  'before retreat.', file=sys.stderr)
-            reopened_after_failure = gripper.move(OPEN_PCT)
-            if not reopened_after_failure:
-                print('WARNING: gripper failed to reopen; retreating anyway.',
-                      file=sys.stderr)
+            close_result = gripper.move_measured(args.grasp_close_pct)
+            grasp_verified, grasp_detail = assess_grasp(
+                close_result, args.min_grasp_position_delta_pct,
+                args.min_grasp_current_pct)
+            retryable = is_retryable_empty_close(
+                close_result, args.min_grasp_position_delta_pct)
+            verdict = 'PASS' if grasp_verified else 'FAIL'
+            print(f'GRASP VERIFICATION {verdict}: {grasp_detail}')
+            print_attempt_result(
+                attempt_number, attempt_count, depth_mm, close_result,
+                grasp_verified, retryable, grasp_detail)
 
-        retreat, _ = node.compute_cartesian(
-            wrist_hover, wrist_quaternion, args.scale,
-            'straight retreat to hover')
-        node.execute_cartesian(retreat, 'straight retreat to hover')
-        verify_tcp(node, hover, 'retreat hover')
+            last_reopen_completed = None
+            if not grasp_verified:
+                print('No object was verified between the fingers. Reopening '
+                      'before retreat.', file=sys.stderr)
+                last_reopen_completed = gripper.move(OPEN_PCT)
+                if not last_reopen_completed:
+                    print('WARNING: gripper failed to reopen; retreating and '
+                          'disabling further retries.', file=sys.stderr)
+
+            retreat_label = (
+                f'attempt {attempt_number}/{attempt_count} straight retreat '
+                'to hover')
+            retreat, _ = node.compute_cartesian(
+                wrist_hover, wrist_quaternion, args.scale, retreat_label)
+            node.execute_cartesian(retreat, retreat_label)
+            verify_tcp(node, hover,
+                       f'attempt {attempt_number} retreat hover')
+
+            if grasp_verified:
+                break
+            if attempt_number >= attempt_count:
+                break
+            if not last_reopen_completed:
+                break
+            if not retryable:
+                print('Further retries disabled: the failure was not a clean '
+                      'measured empty close.', file=sys.stderr)
+                break
+            print(f'RETRY RESET: returning only to DB {grab_to_lift.name} '
+                  'start; standby return is not used between attempts.')
+            node.plan_joint_pose(
+                joint_map(grab_to_lift.start), True, args.scale,
+                f'retry reset: clicked hover -> DB '
+                f'{grab_to_lift.name} start')
+            node.verify_saved_plan_start(grab_to_lift)
+            node.plan_tcp_pose(
+                hover, wrist_quaternion, tcp_offset, True, args.scale,
+                f'retry re-approach: DB {grab_to_lift.name} start -> '
+                'clicked hover')
+            verify_tcp(node, hover,
+                       f'attempt {attempt_number + 1} re-approach hover')
+            print(f'RETRYING: next attempt is {args.retry_step_mm:g} mm '
+                  f'deeper at {attempt_depths_mm[attempt_number]:g} mm total '
+                  'depth.')
 
         node.plan_joint_pose(
             joint_map(grab_to_lift.start), True, args.scale,
@@ -867,9 +1041,11 @@ def main(argv=None):
 
         if not grasp_verified:
             raise HoverError(
-                'arm returned to standby, but grasp verification failed; '
-                f'gripper reopen '
-                f'{"completed" if reopened_after_failure else "failed"}')
+                'arm returned to standby, but grasp verification failed after '
+                f'{attempts_completed}/{attempt_count} allowed attempt(s); '
+                'last gripper reopen '
+                f'{"completed" if last_reopen_completed else "failed"}; '
+                f'last result: {grasp_detail}')
 
         held_position = gripper.position_pct()
         held_current = gripper.current_pct()

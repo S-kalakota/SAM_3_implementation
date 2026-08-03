@@ -59,7 +59,7 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
   loosening, or repositioning of the camera or robot base requires repeating
   B1–B3 before vision-guided motion resumes.
 
-### Experimental D0 — measured grasp verification ready to test (2026-08-03)
+### Experimental D0 — measured grasp verification + redo ready (2026-08-03)
 - The operator chose to defer C1/C2/C3 temporarily and try one narrow physical
   grab using the already validated click-to-base target.
 - Initial physical attempts planned correctly but passed too high to secure the
@@ -78,9 +78,22 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
   default close target is **60%**, and contact passes only if the measured final
   position remains at least 8 percentage points more open (>=68%). Peak gripper
   current is sampled and reported; it is logging-only until successful/failed
-  trials establish a threshold. A failed check reopens at the grasp point,
-  retreats, and returns to `standby`. A passed check is verified again at
-  `standby` to detect a slipped object.
+  trials establish a threshold. A clean measured empty close reopens at the
+  grasp point and retreats vertically to hover. Before retrying, it returns
+  only to the selected proven DB left/right grab pose, verifies that anchor,
+  and plans back to the clicked hover; it does **not** return to `standby`
+  between attempts. The next attempt is 5 mm deeper by default and keeps the
+  same XY and fixed DB orientation. Missing telemetry, ambiguous feedback, or
+  a failed reopen disables the retry. A passed check is verified again at
+  `standby` to detect a slipped object; a final failure still returns to
+  `standby` after retries are exhausted.
+- Retry behavior is configurable with `--grasp-retries` (default 1, maximum 3)
+  and `--retry-step-mm` (default 5, maximum 20). Initial depth plus all retries
+  may not exceed the existing 100 mm experimental cap. Every close emits a
+  machine-readable `GRASP_ATTEMPT_RESULT` using schema
+  `fr5.grasp_attempt.v1`; this keeps the action, feedback, and outcome separate
+  so a later VLA executive can choose the next action without replacing the
+  proven motion layer.
 - Execution is refused unless the live arm is within 0.02 rad of the recorded
   DB standby start. Adjacent saved-trajectory endpoints are validated within
   0.005 rad before any motion; the current DB differs by less than 0.0001 rad.
@@ -90,11 +103,20 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
   left-side mock execution
   replayed all 228 recorded DB points, reached the selected TCP point, retreated,
   and returned through the two saved return trajectories to `standby`. The new
-  measured grasp pass/fail behavior requires its first live validation.
+  measured grasp pass/fail behavior passed an isolated full-sequence mock and
+  the operator reports that the measured check works on the rig. An isolated
+  domain-99 execution proved the original direct-hover redo path. That route
+  was superseded the same day: the retry now resets through the selected DB
+  left/right grab pose before re-approaching the clicked hover. A second
+  isolated domain-99 execution validated the revised route end to end: 35 mm
+  empty close → open → clicked hover → verified `rightgrab` DB anchor → clicked
+  hover → 40 mm verified grasp → normal saved DB return. Its first live
+  validation remains pending.
 - This experiment does not complete C1-C3 or D1/D2. There is still no table
   plane, object-height/width check, bin-wall gate, or environment collision
   scene. Gripper feedback detects blocked closure but does not measure contact
-  with the gripper back or automatically correct grasp depth.
+  with the gripper back or determine the correct depth; the single 5 mm redo is
+  a bounded heuristic, not depth perception.
 
 ### Infrastructure fixed along the way
 - `~/fairino5` was renamed to `~/fairino_ros_connector`; re-pointed the
@@ -141,26 +163,32 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
 
 ## What's next (in order)
 
-1. **Validate measured grasp detection:** click the box, plan at a trial depth,
-   then execute while recording the reported final position and peak current:
+1. **Validate the miss redo:** click the box, plan at a trial depth, then
+   execute while recording both attempt results. A clean miss at 35 mm should
+   reopen, return to hover, reset through the selected DB grab pose, re-approach
+   the clicked hover, and retry at 40 mm:
 
    ```bash
    ros2 launch fr5_bringup a1_bringup.launch.py sim:=false
    ros2 run fr5_bringup b3_pick_point.py
    ros2 run fr5_bringup d0_point_grab.py \
      --target-file=/tmp/fr5_b3_target.json --grasp-depth-mm=35 \
-     --grasp-close-pct=60
+     --grasp-close-pct=60 --grasp-retries=1 --retry-step-mm=5
    ros2 run fr5_bringup d0_point_grab.py \
      --target-file=/tmp/fr5_b3_target.json --grasp-depth-mm=35 \
-     --grasp-close-pct=60 \
+     --grasp-close-pct=60 --grasp-retries=1 --retry-step-mm=5 \
      --execute --confirm-ungated-grab
    ros2 run fr5_bringup a2_gripper.py --open
    ```
 
    The arm must start at the recorded DB standby point. Stop unless preflight
-   reports three validated DB trajectories plus four planned new segments.
+   reports three validated DB trajectories plus eight planned new segments for
+   the two allowed attempts, including both retry-reset connections.
    Keep the full path clear and a hand on the e-stop. Require `GRASP
-   VERIFICATION PASS` before treating the pickup as successful.
+   VERIFICATION PASS` before treating the pickup as successful. Confirm that a
+   failed first close prints `outcome: empty_close` in its structured record,
+   reopens, retreats fully to hover, visits and verifies the selected DB grab
+   pose, returns to clicked hover, and only then descends the extra 5 mm.
 2. **Calibrate feedback:** record final position and peak current for several
    known successful and empty/failed closes, then set a nonzero
    `--min-grasp-current-pct` only if the distributions separate reliably.

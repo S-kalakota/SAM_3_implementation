@@ -29,6 +29,7 @@ you can caliper the jaw opening and the finger pads, then tells you exactly
 what to record in config/gripper.yaml (consumed later by C2's width gate).
 """
 import argparse
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -42,6 +43,12 @@ from fairino_msgs.srv import RemoteCmdInterface
 GRIPPER_IDX = 1                 # Fairino gripper bus index (production value)
 GRIPPER_VENDOR_CFG = "SetGripperConfig(4,0,0,0)"   # DH/Dahuan PGC/PGI series
 SERVICE = "fairino_remote_command_service"
+RPC_TIMEOUT_S = 5.0
+# The Fairino bridge passes a 30 s maximum time to the vendor MoveGripper RPC.
+# Its ROS service reply can therefore arrive well after an otherwise healthy
+# physical move.  Wait beyond that server-side bound so a slow reply is not
+# mislabeled as a rejection while the request continues running remotely.
+MOVE_RPC_TIMEOUT_S = 35.0
 MOVE_TIMEOUT_S = 10.0
 
 
@@ -68,7 +75,7 @@ class GripperNode(Node):
         self.nonrt = msg
 
     # ---- raw command channel ----------------------------------------------
-    def call(self, cmd, timeout=5.0):
+    def call(self, cmd, timeout=RPC_TIMEOUT_S):
         """Send one command string; return raw cmd_res or None on failure."""
         if not self.cli.wait_for_service(timeout_sec=timeout):
             self.get_logger().error(
@@ -81,11 +88,12 @@ class GripperNode(Node):
         rclpy.spin_until_future_complete(self, fut, timeout_sec=timeout)
         res = fut.result()
         if res is None:
-            self.get_logger().error(f'timed out: {cmd}')
+            self.get_logger().error(
+                f'timed out after {timeout:g} s: {cmd}')
             return None
         return res.cmd_res
 
-    def call_ok(self, cmd, timeout=5.0):
+    def call_ok(self, cmd, timeout=RPC_TIMEOUT_S):
         res = self.call(cmd, timeout)
         ok = res == '0'
         if not ok and res is not None:
@@ -109,10 +117,14 @@ class GripperNode(Node):
             self.get_logger().warn(f'{cmd} reports gripper fault={fault}')
             return None
         try:
-            return float(value)
+            parsed = float(value)
         except ValueError:
             self.get_logger().warn(f'{cmd}: bad value {value!r}')
             return None
+        if not math.isfinite(parsed):
+            self.get_logger().warn(f'{cmd}: non-finite value {value!r}')
+            return None
+        return parsed
 
     # ---- gripper ops --------------------------------------------------------
     def activate(self):
@@ -129,14 +141,28 @@ class GripperNode(Node):
         return self.query_csv(f'GetGripperCurCurrent({GRIPPER_IDX})')
 
     def _send_move(self, pct):
-        """Send one move, re-activating and retrying once on rejection."""
+        """Send one move exactly once.
+
+        A missing service response is an ambiguous outcome: the controller may
+        still be processing the command after this client stops waiting.  Do
+        not configure, activate, or resend automatically in that state.
+        """
         pct = int(max(0, min(100, pct)))
-        if not self.call_ok(f'MoveGripper({GRIPPER_IDX},{pct})'):
-            print('MoveGripper rejected — re-activating and retrying once...')
-            if not self.activate():
-                return False
-            if not self.call_ok(f'MoveGripper({GRIPPER_IDX},{pct})'):
-                return False
+        cmd = f'MoveGripper({GRIPPER_IDX},{pct})'
+        response = self.call(cmd, timeout=MOVE_RPC_TIMEOUT_S)
+        if response is None:
+            print(
+                f'{cmd} was not confirmed; command outcome is unknown. '
+                'No automatic retry or gripper reactivation will be sent.',
+                file=sys.stderr)
+            return False
+        if response != '0':
+            self.get_logger().error(f'{cmd} -> {response}')
+            print(
+                f'{cmd} returned an error. No automatic retry or gripper '
+                'reactivation will be sent.',
+                file=sys.stderr)
+            return False
         return True
 
     def move(self, pct, wait=True):

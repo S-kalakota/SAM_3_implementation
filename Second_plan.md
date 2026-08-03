@@ -167,7 +167,7 @@ physical repositioning of the camera or robot base invalidates
 
 # Milestone C: grasp geometry + safety
 
-## Experimental D0 override — MEASURED GRASP CHECK READY (2026-08-03)
+## Experimental D0 override — MEASURED GRASP CHECK + REDO READY (2026-08-03)
 
 The operator chose to defer C1-C3 temporarily for constrained physical trials.
 `d0_point_grab.py` consumes the fresh target from `b3_pick_point.py`,
@@ -179,17 +179,30 @@ the straight Cartesian descent/retreat, then replays the exact recorded
 45 mm below the clicked surface succeed only intermittently. D0 now opens to
 100%, commands a 60% close target, and treats the object as detected only when
 the measured fingers remain at least 8 percentage points more open than the
-command. Peak motor current is recorded as supporting evidence. A failed check
-reopens before retreating and returns to `standby`; a passed check is verified
-again at `standby` for slip. The original 100 mm hover is unchanged. Execution
-requires the arm at the recorded standby start,
+command. Peak motor current is recorded as supporting evidence. A clean empty
+close reopens and retreats vertically to hover. It then returns only to the
+selected proven DB left/right grab pose, verifies that anchor, re-approaches the
+clicked hover, and retries once 5 mm deeper by default without changing XY or
+orientation. It does not return to `standby` between attempts. Faults,
+missing/ambiguous feedback, and a failed reopen disable the redo. A final
+failure returns to `standby`; a passed check is verified again at `standby` for
+slip. Every close emits a
+structured `fr5.grasp_attempt.v1` action/observation/outcome record so this
+temporary fixed retry can later be selected or replaced by the VLA executive
+without changing the motion layer. The original 100 mm hover is unchanged.
+Execution requires the arm at the recorded standby start,
 `--execute --confirm-ungated-grab`, and a click no more than 10 minutes old.
+An isolated domain-99 execution validated the earlier direct-hover
+miss-then-success sequence. That route was superseded the same day by the
+DB-grab reset described above. A second isolated execution validated the
+revised route end to end, including verification at the `rightgrab` anchor;
+real-hardware validation remains pending.
 
 This is an explicit ordering exception, not completion of the skipped work.
 There is no table/floor plane, object-height or jaw-width check, bin-wall gate,
 or environment collision scene. This detects an object blocking the fingers;
-it does not detect contact with the gripper back or automatically determine the
-correct depth. At `standby`, release with
+it does not detect contact with the gripper back or determine the correct
+depth. The one-step redo is only a bounded heuristic. At `standby`, release with
 `ros2 run fr5_bringup a2_gripper.py --open`.
 
 ## Task C1: table plane
@@ -364,12 +377,16 @@ The single ordered path from today to done. Each step is a task above; don't sta
 4. **B1 — DONE (2026-07-16)** — captured 8 touch-point pairs across the workspace at varied heights.
 5. **B2 — DONE (2026-07-16)** — solved and saved `T_base←cam`; 7.532 mm RMS, 12.358 mm maximum residual; static TF integrated into bringup.
 6. **B3 — DONE (2026-07-17)** — five camera-selected bin points validated with the separated 100 mm, ≤5%-speed hover workflow; X/Y accuracy accepted within the 15 mm tolerance.
-   **Immediate ordering exception (2026-08-03): D0 MEASURED GRASP CHECK READY**
-   — clicked-point open/descend/verified-close/retreat/standby trials run before
-   C1-C3. Fixed motion replays the proven `plans.sqlite` trajectories exactly;
-   only the DB-endpoint ↔ clicked-point motion is newly planned. Both 35 mm and
-   45 mm depths have been intermittent; blocked-closure position and current
-   measurements are the next live test.
+   **Immediate ordering exception (2026-08-03): D0 MEASURED GRASP CHECK + REDO
+   READY** — clicked-point open/descend/verified-close/retreat/standby trials
+   run before C1-C3. Fixed motion replays the proven `plans.sqlite`
+   trajectories exactly; only the DB-endpoint ↔ clicked-point motion is newly
+   planned. Both 35 mm and 45 mm depths have been intermittent. D0 now resets
+   through the chosen DB left/right grab pose and retries one clean empty close
+   5 mm deeper, without returning to standby between attempts. It emits
+   structured attempt results; live miss-then-success validation is next.
+   Gripper orientation remains fixed to the chosen DB side until C2 supplies
+   yaw through `GraspTarget`.
 7. **C1 — DEFERRED, NOT COMPLETE** — table/support-plane fit + ghost filter.
 8. **C2** — geometric grasp + the `GraspTarget` interface.
 9. **C3** — safety gate as one function with readable refusals.
