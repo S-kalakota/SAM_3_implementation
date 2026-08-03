@@ -167,6 +167,25 @@ physical repositioning of the camera or robot base invalidates
 
 # Milestone C: grasp geometry + safety
 
+## Experimental D0 override — READY FOR LIVE TEST (2026-08-03)
+
+The operator chose to defer C1-C3 temporarily for one constrained physical
+trial. `d0_point_grab.py` consumes the fresh target from `b3_pick_point.py`,
+reads the current `plans.sqlite` directly, and chooses the nearer left/right DB
+grab endpoint. It replays the exact recorded `standby_to_*grab` path, uses
+MoveIt only for the short DB-grab-point ↔ clicked-hover connections, executes
+the straight Cartesian descent/retreat, then replays the exact recorded
+`*grab_to_*lift` and `*lift_to_standby` paths. It opens to 100%, closes to 71%
+at the selected TCP point, and holds 71% at `standby`. Execution requires the
+arm at the recorded standby start, `--execute --confirm-ungated-grab`, and a
+click no more than 10 minutes old. Both side plans and a complete left-side
+mock execution pass; the real trial is next.
+
+This is an explicit ordering exception, not completion of the skipped work.
+There is no table/floor plane, object-height or jaw-width check, bin-wall gate,
+or environment collision scene. The camera click is a visible surface point;
+the experiment applies no automatic below-top/object-center grasp offset.
+
 ## Task C1: table plane
 **Do:**
 - RANSAC-fit the table plane from the ZED point cloud once (store in camera frame + transformed to base frame). Object height = plane Z − top-face Z. Also a sanity filter: any detected "object" whose centroid isn't between the plane and ~40 cm above it is a segmentation ghost — reject.
@@ -339,7 +358,12 @@ The single ordered path from today to done. Each step is a task above; don't sta
 4. **B1 — DONE (2026-07-16)** — captured 8 touch-point pairs across the workspace at varied heights.
 5. **B2 — DONE (2026-07-16)** — solved and saved `T_base←cam`; 7.532 mm RMS, 12.358 mm maximum residual; static TF integrated into bringup.
 6. **B3 — DONE (2026-07-17)** — five camera-selected bin points validated with the separated 100 mm, ≤5%-speed hover workflow; X/Y accuracy accepted within the 15 mm tolerance.
-7. **C1 — NEXT** — table/support-plane fit + ghost filter.
+   **Immediate ordering exception (2026-08-03): D0 is READY FOR LIVE TEST** —
+   one clicked-point open/descend/close-71%/retreat/standby trial runs before
+   C1-C3. Fixed motion replays the proven `plans.sqlite` trajectories exactly;
+   only the DB-endpoint ↔ clicked-point motion is newly planned. The full mock
+   sequence passes; no real grab has run yet.
+7. **C1 — DEFERRED, NOT COMPLETE** — table/support-plane fit + ghost filter.
 8. **C2** — geometric grasp + the `GraspTarget` interface.
 9. **C3** — safety gate as one function with readable refusals.
 10. **C4** — removed (no zones); 10 % speed rule and waypoint-only transit carry into D1/D2.
@@ -352,7 +376,7 @@ The single ordered path from today to done. Each step is a task above; don't sta
 17. **G1–G2** — *only if* the no-mesh-object trigger fires; otherwise explicitly closed as "not required".
 
 The accepted `T_base_cam.json` is physically validated by B3, so Milestone B
-is complete. **C1 is next.**
+is complete. **The D0 real point-grab trial is next; C1 remains deferred.**
 
 # Definition of done
 

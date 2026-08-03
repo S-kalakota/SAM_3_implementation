@@ -53,7 +53,7 @@ from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
 
 BASE_FRAME = 'base_link'
-TCP_FRAME = 'tcp_link'   # A2 fingertip frame - NOT wrist3_link (see README).
+TCP_FRAME = 'tcp_link'   # A2 fingertip frame; see Next_time.md/Second_plan.md.
 WINDOW = 'B1 touch-point capture'
 PATCH = 5                # pixels; plan calls for a 5x5 median patch
 MIN_VALID_IN_PATCH = 8   # of 25; below this the click is rejected as bad depth

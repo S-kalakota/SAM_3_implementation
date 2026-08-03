@@ -15,6 +15,7 @@ install(PROGRAMS
   scripts/b2_fit_transform.py
   scripts/b3_pick_point.py
   scripts/b3_hover.py
+  scripts/d0_point_grab.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

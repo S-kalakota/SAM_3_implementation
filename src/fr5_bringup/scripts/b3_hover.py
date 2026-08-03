@@ -258,8 +258,8 @@ def check_target_envelope(surface, base_points):
 
 
 class B3HoverNode(Node):
-    def __init__(self):
-        super().__init__('b3_hover')
+    def __init__(self, node_name='b3_hover'):
+        super().__init__(node_name)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 

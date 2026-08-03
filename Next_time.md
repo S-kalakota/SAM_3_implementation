@@ -1,6 +1,6 @@
 # Next time — where we are and what's next
 
-Session notes, updated 2026-07-17. Continues `Second_plan.md`. All robot code lives in
+Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code lives in
 `~/VLA_Model_Work/robot_ws` (package `fr5_bringup`), pushed to
 `github.com/S-kalakota/cobot_ws` (the current canonical remote; the older
 `S-kalakota/robot_ws` repository contains the same pre-update tree).
@@ -59,6 +59,31 @@ Session notes, updated 2026-07-17. Continues `Second_plan.md`. All robot code li
   loosening, or repositioning of the camera or robot base requires repeating
   B1–B3 before vision-guided motion resumes.
 
+### Experimental D0 — clicked-point grab ready; live test next (2026-08-03)
+- The operator chose to defer C1/C2/C3 temporarily and try one narrow physical
+  grab using the already validated click-to-base target.
+- `d0_point_grab.py` treats the selected point as the exact `tcp_link` grasp
+  position. It reads `plans.sqlite` directly, chooses the nearer left/right DB
+  grab endpoint, and replays these recorded trajectories point-for-point with
+  their saved timing: `standby_to_*grab`, `*grab_to_*lift`, and
+  `*lift_to_standby`. MoveIt is used only for the short DB-grab-point ↔ new
+  hover connections. Descent and retreat are straight Cartesian paths capped
+  at 20 mm/s. The gripper opens to 100%, closes to **71%**, and remains at 71%
+  after the final recorded trajectory reaches `standby`.
+- Execution is refused unless the live arm is within 0.02 rad of the recorded
+  DB standby start. Adjacent saved-trajectory endpoints are validated within
+  0.005 rad before any motion; the current DB differs by less than 0.0001 rad.
+- Plan-only is the default. Real execution requires both `--execute` and
+  `--confirm-ungated-grab`, plus a target clicked within the last 10 minutes.
+- Build and both left/right full plans pass. A full left-side mock execution
+  replayed all 228 recorded DB points, reached the selected TCP point, retreated,
+  and returned through the two saved return trajectories to `standby`. The real
+  grab has **not** been attempted yet.
+- This experiment does not complete C1-C3 or D1/D2. There is still no table
+  plane, object-height/width check, bin-wall gate, or environment collision
+  scene. The clicked depth is the visible surface point, with no automatic
+  object-center or below-top grasp offset.
+
 ### Infrastructure fixed along the way
 - `~/fairino5` was renamed to `~/fairino_ros_connector`; re-pointed the
   `robot_ws/src/fairino_description` symlink and fixed broken absolute
@@ -69,10 +94,10 @@ Session notes, updated 2026-07-17. Continues `Second_plan.md`. All robot code li
   `robot_ws/src`, backup kept as `*.stale-20260715`). This driver hosts
   `/fairino_remote_command_service` + `/nonrt_state_data` inside
   ros2_control (one shared RPC session — same as production).
-- Updated `leftGrab` / `rightGrab` SRDF poses were applied 2026-07-16 from the
-  latest taught start points in `db/plans.sqlite` (`leftgrab_to_leftlift` and
-  `rightgrab_to_rightlift`). The SRDF now matches the latest taught
-  trajectories.
+- `leftGrab` / `rightGrab` SRDF poses were applied 2026-07-16 from the DB at
+  that time. The trajectories were updated again on 2026-07-31, so D0 does not
+  rely on the SRDF copy: it reads the current `plans.sqlite` endpoints and full
+  recorded paths directly.
 
 ### Hard-won gotchas (read before debugging)
 1. **`tcp_offset.yaml` is baked in at LAUNCH time.** Editing it does nothing
@@ -104,10 +129,28 @@ Session notes, updated 2026-07-17. Continues `Second_plan.md`. All robot code li
 
 ## What's next (in order)
 
-1. **Milestone C1 (next):** characterize the bin support/floor geometry and
-   reject depth measurements that cannot represent a valid object in a bin.
-2. **Milestones C2/C3:** produce a geometric `GraspTarget`, then pass it through
-   the source-independent safety gate, following `Second_plan.md`.
+1. **Experimental D0 live grab (next):** bring up the real robot, click the box,
+   run the complete sequence plan-only, inspect it, then explicitly execute it:
+
+   ```bash
+   ros2 launch fr5_bringup a1_bringup.launch.py sim:=false
+   ros2 run fr5_bringup b3_pick_point.py
+   ros2 run fr5_bringup d0_point_grab.py \
+     --target-file=/tmp/fr5_b3_target.json
+   ros2 run fr5_bringup d0_point_grab.py \
+     --target-file=/tmp/fr5_b3_target.json \
+     --execute --confirm-ungated-grab
+   ```
+
+   The arm must start at the recorded DB standby point. Stop unless preflight
+   reports three validated DB trajectories plus four planned new segments.
+   Keep the full path clear and a hand on the e-stop. The box remains held at
+   71% when the saved return choreography reaches `standby`.
+2. **After the trial:** record whether the exact clicked surface point places
+   the finger pads at the correct grasp height. If it does not, measure the
+   required vertical grasp offset before another attempt.
+3. **Deferred, not complete:** C1 support geometry, C2 `GraspTarget`, and C3
+   safety gating remain the path from this experiment to a repeatable picker.
 
 ## Also parked
 - `mask_service.py` (711-line resident masking daemon, Daemon plan) is

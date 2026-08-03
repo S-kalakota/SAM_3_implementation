@@ -10,7 +10,8 @@ Flow:
      matte surface.
   2. Inspect the locked camera/base coordinates and depth variation.
   3. Press SPACE to accept, or ``r`` to reject and click again.
-  4. Copy the printed plan-only B3 hover command into a sourced terminal.
+  4. Copy either the printed hover-validation command or the experimental
+     point-grab command into a sourced terminal.
 
 Keys: left click = lock point, SPACE = accept, r = reject, q/Esc = quit.
 """
@@ -179,6 +180,12 @@ def print_commands(record, out_path):
     print(target)
     print('Equivalent plan-only command using the coordinate directly:')
     print(f'ros2 run fr5_bringup b3_hover.py --target={target}')
+    print('\nEXPERIMENTAL POINT GRAB (skips the C1/C2/C3 safety gate):')
+    print('1) Plan the complete grab/retreat/standby sequence:')
+    print(f'ros2 run fr5_bringup d0_point_grab.py --target-file={target_file}')
+    print('2) Only after reviewing that plan and clearing the full path:')
+    print('ros2 run fr5_bringup d0_point_grab.py '
+          f'--target-file={target_file} --execute --confirm-ungated-grab')
 
 
 def parse_args(argv=None):
