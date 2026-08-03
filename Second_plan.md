@@ -1,8 +1,18 @@
-# Second plan — From masks + depth to a Fairino pick
+# Second plan — Voice-guided VLA picking with the Fairino
 
-Picks up where `intial plan.md` ended. Milestones 1–3 are done and extended: the agent masks objects from a typed request on live ZED frames, and every kept mask now carries metric depth and a 3D centroid (`object_depth` in the result JSON). What nothing in the system knows yet is **where anything is relative to the robot** — the coordinates are in the camera's frame, and the Fairino has never heard of it.
+Picks up where `intial plan.md` ended and is current through the 2026-08-03
+physical grasp trials. Robot command/readback, gripper/TCP setup, taught
+trajectories, camera-to-base calibration, and five-point physical hover
+validation are complete. Clicked-point grasping now has measured close feedback
+and a live-validated three-attempt retry path. The missing link is no longer the
+camera transform; it is turning a spoken object request into a robust point and
+orientation on the selected segmentation mask.
 
-Goal of this plan: type a request, and the Fairino picks up the right box. MoveIt does the motion planning; our job is to hand it a **correct, safe target pose in the robot's base frame** and command the grasp sequence around it.
+Goal of this plan: a person speaks a constrained request, the VLA selects the
+correct mask, and the Fairino picks and places that object. MoveIt and the
+proven `plans.sqlite` choreography remain the only motion layer. The language
+model may interpret the request and respond to outcomes, but it never emits
+joint values or bypasses deterministic target, safety, and execution checks.
 
 ## Stack decision: MoveIt, FoundationPose, AnyGrasp/Contact-GraspNet
 
@@ -16,31 +26,59 @@ The through-line that makes all of this cheap to change: **every grasp source pr
 
 ## What we have today (validated on the rig)
 
-- Masks from language via the SAM 3.1 agent loop (task7), robust to bad Qwen output.
-- Per-object depth: median + XYZ centroid in the **left-camera optical frame** (X right, Y down, Z out of the lens, meters). Example measured: yellow box at `[-0.280, 0.474, 1.382]`.
-- Camera intrinsics/extrinsics measured: fx = 521.5 px, baseline = 0.1199 m (HD720). Accuracy at ~1.4 m: ≈ ±1 cm per axis (grows with distance²).
-- Known weak spot: the 3B Qwen picked the **left** box when asked for the **rightmost** (Milestone E fixes this deterministically).
-- The Daemon plan's resident mask service (`/segment`) is the masking entry point the executive will call.
+- Masks from language via the SAM 3.1 agent loop (task7), with per-object depth
+  and a 3D centroid in the **left-camera optical frame**. The resident
+  `/segment` service exists on the `Daemon` branch of `SAM_3_implementation`;
+  it is not yet merged or connected to this robot workspace.
+- The accepted `calib/T_base_cam.json` converts those camera points to
+  `base_link`: 7.532 mm RMS fit, followed by five successful physical hover
+  checks across the bin. Bringup publishes the static camera TF.
+- D0 reaches a clicked base-frame point through the nearest proven left/right
+  database pose, performs a measured close, retries at deeper Z through that
+  same DB anchor, and returns to standby. A live run completed the 25/30/35 mm
+  sequence with 0.12–0.17 mm grasp-point error.
+- Every D0 close emits `fr5.grasp_attempt.v1`, giving the future VLA a stable
+  action/observation/outcome record without giving it low-level motion control.
+- The 3B Qwen once chose the left box for “rightmost”; spatial qualifiers must
+  therefore be resolved deterministically among returned masks.
+- Grasping is not yet robust. Retries only change Z, the wrist orientation is
+  still the chosen DB side, the flexible box can defeat position-only grasp
+  verification, current reports 0%, and gripper activation/reopen health still
+  needs hardening before unattended voice execution.
 
 ## Target data flow
 
 ```
- typed request ─► SAM 3.1 agent ─► masks ─► gate ─► XYZ centroid (camera frame)
-                                     │                  │
-                                     │ (Milestone F)    │
-                                     ▼                  │
-                            FoundationPose ─► full 6-DoF│pose (camera frame)
-                                     │                  │
-                                     └───────┬──────────┘
-                                       T_base←cam  (hand-eye calibration, Milestone B)
-                                             │
-                              GraspTarget in Fairino base frame
-                      (C2 geometric │ F5 pose-derived │ G2 grasp-net — same interface)
-                                             │
-                          safety gate (bounds, table plane, depth quality)
-                                             │
-                      MoveIt (Fairino) plans & executes: hover ─► pick ─► place
+ voice ─► speech-to-text ─► constrained intent {action, object, qualifier}
+                                      │
+                                      ▼
+                         SAM `/segment` ─► selected mask
+                                      │
+                         robust in-mask center + depth
+                                      │
+                             accepted T_base←cam
+                                      │
+                 position-only GraspTarget / D0-compatible target
+                                      │
+                       overlay ─► plan ─► hover ─► confirmed pick
+                                      │
+                       `fr5.grasp_attempt.v1` outcome ─► VLA response
+
+ after center-pick works:
+ selected mask + masked 3D points ─► short-axis grasp direction ─► base-frame yaw
+                                      │
+                     oriented top-down GraspTarget ─► same motion/safety layer
+
+ later for tilted objects:
+ selected mask + mesh + depth ─► FoundationPose 6-DoF ─► same GraspTarget interface
 ```
+
+The first version deliberately uses the center of the selected segmentation,
+not a free-form point invented by the language model. “Center” means a valid,
+well-supported pixel inside the mask: start with the mask centroid; if it lies
+outside an irregular mask or lacks depth, use the nearest valid in-mask pixel
+or the interior distance-transform maximum, then median a small in-mask depth
+patch. The system refuses sparse or inconsistent depth.
 
 ---
 
@@ -113,14 +151,23 @@ the fixed station. **Passed by operator confirmation.**
 
 One fixed rigid transform `T_base←cam` converts camera points to robot points: `p_base = T @ [x, y, z, 1]`. Both camera and robot base are bolted down, so it's constant until something physically moves. Everything downstream — centroid targets today, FoundationPose poses in Milestone F — rides on this one transform.
 
-## Task B1: touch-point capture tool
+## Task B1: touch-point capture tool — DONE (2026-07-16)
+
+**Status:** Complete. Eight well-spread camera-point ↔ fingertip-touch pairs
+are retained in `calib/calib_points.json`.
+
 **Do:**
 - Small script: shows the live ZED left view; you click a pixel, it records that pixel's `XYZ` from `MEASURE.XYZ` (median of a 5×5 patch); then you jog the Fairino so the fingertip touches the same physical point and the script records the TCP position.
 - Collect **8–12 point pairs spread across the whole workspace, including different heights** (put a box or block under some touches — coplanar points make the fit degenerate in Z).
 
 **Done when:** `calib_points.json` holds ≥ 8 well-spread pairs.
 
-## Task B2: solve the transform
+## Task B2: solve the transform — DONE (2026-07-16)
+
+**Status:** Complete. The accepted rigid fit is saved in
+`calib/T_base_cam.json` with 7.532 mm RMS, 6.542 mm mean, and 12.358 mm maximum
+residual. Bringup publishes it as `base_link → zed_left_optical`.
+
 **Do:**
 - Fit with Umeyama/Kabsch (no scale). Core of it:
 
@@ -165,45 +212,117 @@ physical repositioning of the camera or robot base invalidates
 
 ---
 
+# Immediate Milestone V: voice-to-segmentation-center VLA pickup
+
+This is the next work. It reuses the accepted camera transform and D0 motion
+layer instead of replacing either with model-generated motion.
+
+## Task V1: voice to constrained object intent
+
+**Do:**
+
+- Add speech-to-text and normalize the transcript into a small command object:
+  `action`, `object/category`, and an optional spatial qualifier such as
+  `leftmost`, `rightmost`, or `nearest`.
+- Echo the transcript and parsed intent on screen and, where practical, speak
+  it back. Require explicit confirmation before the first live-motion phase.
+- Keep parsing separate from execution. Unsupported actions, uncertain object
+  names, or multiple unresolved matches are refusals; neither speech nor the
+  VLA may emit joints, arbitrary poses, or gripper RPC calls.
+- Resolve spatial qualifiers deterministically over mask/base-frame metadata,
+  not by asking Qwen to judge image position.
+
+**Done when:** at least 20 representative spoken requests, including noise and
+an intentionally unsupported request, produce the correct constrained intent
+or a readable refusal without any robot movement.
+
+## Task V2: selected mask to center target
+
+**Do:**
+
+- Merge or run the `Daemon` branch's resident `/segment` service and define a
+  stable request/response adapter for category, masks, confidence, depth, and
+  camera timestamp/frame.
+- For the selected mask, start with its pixel centroid. If it is outside the
+  mask or has invalid depth, select the nearest valid in-mask pixel or the
+  distance-transform interior maximum. Median a small patch containing only
+  valid masked depth and refuse low valid-pixel count or excessive spread.
+- Back-project that pixel into the left-camera optical frame, transform it with
+  the accepted `T_base_cam.json`, and write the existing fresh target JSON (or
+  equivalent position-only `GraspTarget`) consumed by D0. Preserve frame name,
+  timestamp, mask/intent identity, depth evidence, and confidence.
+- Render an audit overlay containing transcript, selected mask, center pixel,
+  depth patch, and resulting base-frame XYZ.
+
+**Done when:** saved-frame tests and live dry runs select a visibly interior
+point on the requested box, invalid depth is refused, and the transformed point
+matches the existing clicked-point target convention.
+
+## Task V3: perception dry-run, hover, then controlled pickup
+
+**Do:**
+
+- Stage 1: produce only the transcript, intent, overlay, target, and refusal
+  reasons. Stage 2: invoke D0 plan-only. Stage 3: perform 100 mm hover-only
+  checks at varied object positions. Do not jump directly from speech to a
+  close command.
+- After the overlay and hover tests pass, allow one explicitly confirmed,
+  low-speed pickup of one clear box using the existing DB choreography and D0
+  grasp sequence. Feed `fr5.grasp_attempt.v1` results back to the VLA so it can
+  report success, failure, or that operator help is required.
+- Before unattended execution, require healthy gripper activation, trustworthy
+  measured reopen position, no direct gripper fault, fresh camera/intent data,
+  and at least the minimum reachability/depth/bin-interior gates.
+
+**Done when:** a spoken request repeatedly selects the correct box center,
+passes 10/10 hover trials at varied positions, and completes controlled picks
+without the language layer commanding low-level motion.
+
+---
+
 # Milestone C: grasp geometry + safety
 
-## Experimental D0 override — MEASURED GRASP CHECK + REDO READY (2026-08-03)
+## Experimental D0 override — RETRY MOTION LIVE-VALIDATED (2026-08-03)
 
-The operator chose to defer C1-C3 temporarily for constrained physical trials.
-`d0_point_grab.py` consumes the fresh target from `b3_pick_point.py`,
-reads the current `plans.sqlite` directly, and chooses the nearer left/right DB
-grab endpoint. It replays the exact recorded `standby_to_*grab` path, uses
-MoveIt only for the short DB-grab-point ↔ clicked-hover connections, executes
-the straight Cartesian descent/retreat, then replays the exact recorded
-`*grab_to_*lift` and `*lift_to_standby` paths. Physical trials at both 35 mm and
-45 mm below the clicked surface succeed only intermittently. D0 now opens to
-100%, commands a 60% close target, and treats the object as detected only when
-the measured fingers remain at least 8 percentage points more open than the
-command. Peak motor current is recorded as supporting evidence. A clean empty
-close reopens and retreats vertically to hover. It then returns only to the
-selected proven DB left/right grab pose, verifies that anchor, re-approaches the
-clicked hover, and retries once 5 mm deeper by default without changing XY or
-orientation. It does not return to `standby` between attempts. Faults,
-missing/ambiguous feedback, and a failed reopen disable the redo. A final
-failure returns to `standby`; a passed check is verified again at `standby` for
-slip. Every close emits a
-structured `fr5.grasp_attempt.v1` action/observation/outcome record so this
-temporary fixed retry can later be selected or replaced by the VLA executive
-without changing the motion layer. The original 100 mm hover is unchanged.
-Execution requires the arm at the recorded standby start,
-`--execute --confirm-ungated-grab`, and a click no more than 10 minutes old.
-An isolated domain-99 execution validated the earlier direct-hover
-miss-then-success sequence. That route was superseded the same day by the
-DB-grab reset described above. A second isolated execution validated the
-revised route end to end, including verification at the `rightgrab` anchor;
-real-hardware validation remains pending.
+The operator deferred C1-C3 temporarily for constrained physical trials.
+`d0_point_grab.py` consumes a fresh base-frame target, reads the current
+`plans.sqlite`, chooses the nearer left/right DB endpoint, and replays the exact
+recorded `standby_to_*grab`, `*grab_to_*lift`, and `*lift_to_standby` paths.
+MoveIt plans only the short DB endpoint ↔ target hover links and straight
+Cartesian descent/retreat. The original 100 mm hover is unchanged.
 
-This is an explicit ordering exception, not completion of the skipped work.
-There is no table/floor plane, object-height or jaw-width check, bin-wall gate,
-or environment collision scene. This detects an object blocking the fingers;
-it does not detect contact with the gripper back or determine the correct
-depth. The one-step redo is only a bounded heuristic. At `standby`, release with
-`ros2 run fr5_bringup a2_gripper.py --open`.
+The grasp check commands a close value and passes only if measured final
+position remains at least 8 percentage points more open: 60% requires >=68%,
+40% requires >=48%, and 0% requires >=8%. Current is sampled, but every trial
+has reported 0%, so it is not a decision signal. A clean miss reopens, retreats
+to hover, resets through the chosen proven DB grab pose, and approaches again at
+the same XY/orientation with a deeper Z. Retry count and depth step are bounded
+by the CLI, and every close emits a structured `fr5.grasp_attempt.v1` record.
+
+A real-hardware run completed all three 25/30/35 mm attempts. Attempts 1 and 2
+closed empty to exactly 60%, reopened to 100%, retreated vertically, reset
+through the verified right-grab DB anchor, and descended 5 mm deeper. Attempt 3
+also closed empty; the arm then retreated and returned through the exact DB
+lift/standby paths. Grasp-point error was 0.12–0.17 mm and final retreat-hover
+error 0.17–0.19 mm. That completes live validation of the retry motion and
+standby recovery, but not a successful retry pickup: all attempts retained the
+same XY and fixed DB wrist orientation.
+
+Two observations keep this experimental. First, the flexible box can compress
+to the commanded position, so a real grasp may be mislabeled `empty_close` by
+position alone. Second, the final reopen in that run reported position 0% for a
+100% command while `motion_done` appeared true. The gripper client now gives
+`MoveGripper` the server's full motion window and treats timeout as “result
+unknown” without automatic reactivation or duplicate commands, but startup and
+completion still need stronger state checks: wait after activation, reject
+direct `fault=1`, and require measured final position near the requested open
+value. This must be fixed before unattended VLA execution.
+
+This does not complete the skipped safety work. There is no table/floor plane,
+object-height or jaw-width check, bin-wall gate, or environment collision
+scene. A 0–100 mm configured depth range is not a claim that every value is
+safe; 20 mm retry steps leading to a 90 mm descent are not accepted defaults.
+At `standby`, release with `ros2 run fr5_bringup a2_gripper.py --open`.
 
 ## Task C1: table plane
 **Do:**
@@ -211,10 +330,33 @@ depth. The one-step redo is only a bounded heuristic. At `standby`, release with
 
 **Done when:** reported box height matches a ruler within ~1 cm.
 
-## Task C2: grasp pose from mask + depth — and the `GraspTarget` interface
+## Task C2: mask-derived box orientation — NEXT AFTER VLA CENTER PICK
+
+Keep the first orientation upgrade top-down: V2 supplies position; C2 adds only
+yaw and required jaw width. Full roll/pitch stays fixed until FoundationPose.
+
 **Do:**
-- Top-down grasp: XY = centroid in base frame; yaw = mask principal axis via `cv2.minAreaRect` (align gripper jaws across the box's short side); Z = top face (use `p10` of mask depth, not median — median can include side pixels) plus gripper-specific offset; approach waypoint 100 mm above.
-- Define the interface every grasp source must emit, e.g.:
+
+- Estimate the selected mask's major/minor axes with PCA or
+  `cv2.minAreaRect`. The gripper's closing direction must span the object's
+  short dimension; render the proposed jaw line and approach center on the
+  image before planning.
+- Do not apply the raw image angle directly because the ZED views the box at an
+  angle. Back-project mask points (or at least two axis endpoints) with valid
+  depth, transform them through `T_base_cam.json`, project the resulting axis
+  onto the base XY plane, and compute base-frame wrist yaw there.
+- Resolve the 180-degree symmetry and any equivalent tool-yaw solutions by
+  selecting the one closest to a proven, reachable left/right DB wrist
+  orientation. Plan-only must succeed before execution. If the mask is nearly
+  square, too small, noisy, or has poor 3D support, fall back to the current DB
+  orientation for supervised trials and refuse an unattended oriented pick.
+- Estimate the physical short-side width from the masked 3D points. Refuse a
+  grasp that cannot fit inside the measured 50 mm jaw stroke with clearance.
+- Keep Z on the selected top surface and the approach vertical. Preview and
+  plan boxes rotated at 0, 30, 45, 60, and 90 degrees, then execute at low speed
+  only after all overlays and plans agree with the physical box.
+- Emit a standard `GraspTarget` so the existing executive and later
+  FoundationPose provider use the same contract. For example:
 
 ```python
 @dataclass
@@ -227,9 +369,13 @@ class GraspTarget:
     confidence: float
 ```
 
-- The executive, the safety gate, and MoveIt only ever consume `GraspTarget`. Milestones F and G plug in behind it.
+- The executive, the safety gate, and MoveIt only ever consume `GraspTarget`.
+  Milestones F and G plug in behind it.
 
-**Done when:** rendered grasp axis on the overlay looks right for boxes in several orientations, and the hover executive (D1) consumes a `GraspTarget` rather than raw centroids.
+**Done when:** the rendered center and jaw axis are correct at all five test
+angles, width estimates agree with a ruler closely enough to reject oversized
+objects, MoveIt finds a reachable top-down plan, and rotated-box picks succeed
+without manually changing the wrist orientation.
 
 ## Task C3: safety gate (code, not vibes)
 **Do:**
@@ -252,7 +398,9 @@ Static scene assumption: capture → compute → move. No visual servoing yet.
 
 ## Task D1: hover-only executive
 **Do:**
-- End-to-end: request → agent → depth → base-frame `GraspTarget` → safety gate → MoveIt hover 100 mm above the object → home. Add `--dry-run` (default ON) that plans and visualizes but does not execute.
+- End-to-end: spoken request → constrained intent → selected mask center →
+  depth → base-frame `GraspTarget` → safety gate → MoveIt hover 100 mm above
+  the object → standby. Keep dry-run/plan-only as the default.
 
 **Done when:** 10/10 hovers over the correct box, varied positions, no manual help.
 
@@ -266,18 +414,24 @@ Static scene assumption: capture → compute → move. No visual servoing yet.
 
 ## Task D3: failure handling
 **Do:**
-- Timeouts and aborts at every stage; on grasp-verify failure, retreat and retry once with a fresh capture; log every attempt (target, gate results, outcome) next to the round JSON.
+- Timeouts and aborts at every stage. On grasp-verify failure, consume the
+  structured D0 outcome, retreat safely, request a fresh segmentation, and
+  choose a bounded retry policy. Log transcript, intent, target, gate results,
+  gripper observations, and outcome together.
 
 **Done when:** yanking the box away mid-sequence produces a clean abort + retry, never a crash or a blind grasp.
 
 ---
 
-# Milestone E: fix selection + close the VLA loop
+# Milestone E: harden selection + close the VLA loop
 
 ## Task E1: deterministic spatial selection
 The "rightmost" failure was the MLLM's job to get right, and it didn't. Spatial superlatives should not be LLM judgment calls when we have metric coordinates.
 **Do:**
-- Parse spatial qualifiers (rightmost/leftmost/nearest/largest/…) in code. Ask the agent for the *category* ("yellow box" → all instances), then select among kept masks by base-frame coordinate (rightmost = max base-frame Y-or-X, fixed once in A1; don't use image x, which flips with camera orientation).
+- Extend V1's constrained parser for spatial qualifiers
+  (rightmost/leftmost/nearest/largest/…) and select among kept masks using
+  base-frame measurements. Do not use raw image x or leave the comparison to
+  the language model.
 
 **Done when:** "rightmost yellow box" selects the correct box 10/10 with both boxes visible — the exact case that failed in run_009.
 
@@ -289,9 +443,13 @@ The "rightmost" failure was the MLLM's job to get right, and it didn't. Spatial 
 
 ## Task E3: demo loop
 **Do:**
-- One command: typed request → pick → place → report ("picked the rightmost yellow box, 1.38 m away, placed at drop zone; 14 s"). Keep per-round JSON logging as the metrics source.
+- One spoken command: voice → intent → segmentation → oriented pick → place →
+  spoken/printed report (for example, “picked the rightmost yellow box and
+  placed it at the drop zone”). Keep per-round structured logging as the
+  metrics source.
 
-**Done when:** a naive visitor can type requests and watch correct picks without you touching anything.
+**Done when:** a naive visitor can speak supported requests and watch correct
+picks without operator intervention; ambiguous or unsafe requests are refused.
 
 **Milestone E3 passing = the core project works.** F and G below are the requested perception upgrades that finish it.
 
@@ -369,48 +527,69 @@ If/when triggered:
 
 # Step-by-step: finishing the project
 
-The single ordered path from today to done. Each step is a task above; don't start a step before its predecessor's **Done when** holds (parallel tracks marked).
+This order intentionally starts VLA integration now, proves center targeting,
+then adds orientation. Safety and gripper-state work are explicit gates before
+unattended execution, not reasons to let a model bypass checks.
 
-1. **A1 — DONE (2026-07-15)** — command the Fairino from code, read TCP back; record frames + ROS/JetPack versions.
-2. **A2 — DONE (2026-07-16)** — gripper I/O and geometry recorded; fingertip TCP calibrated; approximately 6 mm two-orientation disagreement accepted as the project tolerance.
-3. **A3 — DONE (confirmed 2026-07-17)** — required fixed-station waypoint and gate positions are already known; no additional position teaching is needed. No planning-scene boxes or watchdog.
-4. **B1 — DONE (2026-07-16)** — captured 8 touch-point pairs across the workspace at varied heights.
-5. **B2 — DONE (2026-07-16)** — solved and saved `T_base←cam`; 7.532 mm RMS, 12.358 mm maximum residual; static TF integrated into bringup.
-6. **B3 — DONE (2026-07-17)** — five camera-selected bin points validated with the separated 100 mm, ≤5%-speed hover workflow; X/Y accuracy accepted within the 15 mm tolerance.
-   **Immediate ordering exception (2026-08-03): D0 MEASURED GRASP CHECK + REDO
-   READY** — clicked-point open/descend/verified-close/retreat/standby trials
-   run before C1-C3. Fixed motion replays the proven `plans.sqlite`
-   trajectories exactly; only the DB-endpoint ↔ clicked-point motion is newly
-   planned. Both 35 mm and 45 mm depths have been intermittent. D0 now resets
-   through the chosen DB left/right grab pose and retries one clean empty close
-   5 mm deeper, without returning to standby between attempts. It emits
-   structured attempt results; live miss-then-success validation is next.
-   Gripper orientation remains fixed to the chosen DB side until C2 supplies
-   yaw through `GraspTarget`.
-7. **C1 — DEFERRED, NOT COMPLETE** — table/support-plane fit + ghost filter.
-8. **C2** — geometric grasp + the `GraspTarget` interface.
-9. **C3** — safety gate as one function with readable refusals.
-10. **C4** — removed (no zones); 10 % speed rule and waypoint-only transit carry into D1/D2.
-11. **D1** — hover-only executive, dry-run default, 10/10.
-12. *(parallel with 13–14, software-only)* **E1** deterministic spatial selection + **E2** Qwen 7B upgrade.
-13. **D2** — full pick-and-place, ≥ 8/10.
-14. **D3** — failure handling; yank-the-box test passes.
-15. **E3** — one-command demo loop. **← core project complete.**
-16. **F1–F5** — FoundationPose: install → ROS bridge → mesh registry → validate vs baseline → 6-DoF grasp provider; tilted-box pick passes. **← requested stack integrated, project finished.**
-17. **G1–G2** — *only if* the no-mesh-object trigger fires; otherwise explicitly closed as "not required".
-
-The accepted `T_base_cam.json` is physically validated by B3, so Milestone B
-is complete. **The D0 real point-grab trial is next; C1 remains deferred.**
+1. **A1 — DONE (2026-07-15):** FR5 command/readback and MoveIt planning frame.
+2. **A2 — DONE (2026-07-16):** DH PGC140 I/O/geometry and fingertip TCP; 6 mm
+   project tolerance accepted.
+3. **A3 — DONE (2026-07-17):** fixed station and DB choreography accepted.
+4. **B1 — DONE (2026-07-16):** eight camera ↔ fingertip point pairs.
+5. **B2 — DONE (2026-07-16):** `T_base_cam.json`, 7.532 mm RMS, static TF.
+6. **B3 — DONE (2026-07-17):** five physical hover points passed.
+7. **D0 RETRY MOTION — LIVE-VALIDATED (2026-08-03):** the real arm completed
+   the 25/30/35 mm miss sequence, DB-anchor resets, retreats, and standby
+   return. Successful reacquisition is not yet proven; retry changes only Z.
+8. **V1 — NEXT:** voice-to-text plus constrained action/object/qualifier
+   intent, transcript confirmation, and deterministic refusals.
+9. **V2:** connect `/segment`, choose a robust valid point near the selected
+   mask center, validate its depth, transform to base, and render the audit
+   overlay.
+10. **V3 perception proof:** recorded-frame tests → live no-motion output → D0
+    plan-only → 10/10 center hover tests at varied positions.
+11. **Gripper live-execution gate (parallel with 8–10):** activation settle and
+    health check, direct-fault handling, measured open-position confirmation,
+    and flexible-box grasp evidence. Do not enable unattended voice motion
+    until this passes.
+12. **V3 controlled center pickup:** one object, explicit confirmation, low
+    speed, existing DB/D0 motion, structured outcome returned to the VLA.
+13. **C2 ORIENTATION — immediately after center pickup:** derive base-frame yaw
+    and jaw width from the selected mask's masked 3D short axis; preview, plan,
+    and test boxes at 0/30/45/60/90 degrees.
+14. **C1 + C3:** support plane and deterministic reachability, depth-quality,
+    object-width, and bin-interior gates. C4 remains removed; waypoint-only
+    transit and low-speed first runs remain policy.
+15. **D1–D3:** production hover/pick/place executive, fresh observations,
+    bounded failure handling, and >=8/10 successful reachable-box picks.
+16. **E1–E3:** deterministic multi-object qualifiers, model soak testing, and
+    the complete spoken-command demo loop. **Core project complete.**
+17. **F1–F5:** FoundationPose through the same `GraspTarget` and safety layer;
+    demonstrate a tilted-box pick. **Full 6-DoF upgrade complete.**
+18. **G1–G2:** only if an irregular/no-mesh object requires learned grasp
+    synthesis; otherwise close it as not required.
 
 # Definition of done
 
-- **Core (step 15):** a naive visitor types requests; the correct box is picked and placed ≥ 8/10 with zero operator help; every unsafe/ambiguous request is *refused with a printed reason* rather than attempted; spatial superlatives resolve deterministically.
-- **Finished with requested stack (step 16):** everything above, plus FoundationPose poses flowing through the same gate and executive, demonstrated by a successful pick of a ~20°-tilted box; MoveIt planning throughout; grasp sources swappable by flag.
-- **Milestone G:** delivered *or* consciously closed with the trigger documented as never having fired. Both count as finished.
+- **First VLA pickup (step 12):** a supported spoken request selects the correct
+  segmentation, shows the center/depth/base target, passes the hover checks,
+  and performs a confirmed pickup through the existing motion layer.
+- **Orientation complete (step 13):** the mask-derived jaw axis matches the
+  physical box at all five test rotations and enables rotated-box pickup.
+- **Core (step 16):** a naive visitor speaks requests; the correct reachable box
+  is picked and placed >=8/10 with no manual targeting. Unsafe, ambiguous, or
+  unsupported requests are refused with a clear reason; spatial qualifiers are
+  deterministic and every attempt has a structured outcome.
+- **Full 6-DoF upgrade (step 17):** FoundationPose flows through the same gate
+  and executive and enables a successful approximately 20-degree tilted-box
+  pick. Grasp providers remain swappable behind `GraspTarget`.
+- **Milestone G:** delivered only if its trigger fires, or consciously closed as
+  not required. Both are valid completion states.
 
 # Open questions (answer these early, they shape A/B/F)
 
-1. Which Fairino model (FR3/FR5/…), and which ROS 2 distro is its driver running on? Same machine as the ZED/SAM stack (the Thor) or a separate PC?
+1. **Answered:** FR5 on ROS 2 Jazzy; the robot workspace and ZED/SAM work run on
+   the Thor.
 2. **Answered:** DH PGC140, commanded through the Fairino remote-command service (`SetGripperConfig` / `ActGripper` / `MoveGripper`); 50 mm usable jaw stroke, 0 mm closed gap, and 20 × 40 mm finger pads. Any grasped box dimension between the pads must be < 50 mm with practical clearance.
 3. **Answered (2026-07-16):** drop zone is fixed, in the same region as the two pick bins; taught as the `drop` joint-space waypoint in A3.
 4. **Answered (2026-07-17):** the camera mount is final, bolted and zip-tied
@@ -418,16 +597,36 @@ is complete. **The D0 real point-grab trial is next; C1 remains deferred.**
    Milestone B and requires repeating B1–B3.
 5. Which JetPack is the Thor on, and which Isaac ROS release supports it? (Decides F1 versions.)
 6. If G triggers: who signs off the grasp-net license for company use?
+7. For V1, should the first speech interface be push-to-talk or a wake word,
+   and must speech recognition stay fully on the Thor? Start with push-to-talk
+   unless deployment requirements say otherwise.
 
 # Risks → mitigations
 
 - **Camera/base mount is altered after calibration** → treat
   `T_base_cam.json` as invalid and repeat B1–B3 before vision-guided motion.
-- **Depth degrades with distance²** → keep pickable workspace under ~2 m from the lens; gate on `valid_fraction` and spread.
-- **MLLM misselects the object** → E1 makes spatial selection deterministic code.
-- **First live motion hits something** → joint-space taught waypoints only, 10 % speed, dry-run default, hand on the e-stop (accepted 2026-07-16: no collision scene, no watchdog).
-- **Descend goes too deep or clips a bin wall** → C3 gate clamps grasp Z to the measured table Z and requires the target inside the active bin's interior minus finger clearance.
-- **Grasping on median depth grabs a side face** → C2 uses top-face (`p10`) depth for grasp Z.
+- **Speech is misheard or intent is ambiguous** → display/speak back transcript
+  and constrained intent; require confirmation during commissioning and refuse
+  low-confidence/unsupported commands.
+- **MLLM selects the wrong instance** → segment the category, then resolve
+  spatial qualifiers deterministically from mask/base-frame measurements.
+- **Mask centroid is outside the object or has bad depth** → snap to a valid
+  interior mask point, use an in-mask median patch, and gate valid count/spread.
+- **Raw image angle produces the wrong wrist yaw** → compute the short axis from
+  masked 3D points in `base_link`, preview it, and refuse low confidence.
+- **Depth degrades with distance squared** → keep the pickable workspace under
+  approximately 2 m and gate valid fraction and spread.
+- **Gripper reports fault/stale completion** → activation settle and health
+  check; require measured final position near each command; unknown results
+  stop retries without automatic reactivation or duplicate motion.
+- **Flexible box closes to the target while held** → do not trust position alone;
+  retain the attempt record and add repeatable secondary evidence such as
+  post-lift segmentation or a proven nonzero current signal.
+- **First live motion hits something** → exact taught DB transit, low speed,
+  plan-only/hover stages first, fresh target, explicit confirmation, and a hand
+  on the e-stop. No collision scene or watchdog is currently present.
+- **Descend goes too deep or clips a bin wall** → C3 clamps grasp Z to the
+  support plane and requires target/finger clearance inside the active bin.
 - **Two processes fight over the ZED** (mask daemon vs ROS camera node) → F2 picks exactly one owner before any Isaac ROS work starts.
 - **Isaac ROS / TensorRT version hell on Jetson** → F1 proves the stock sample first, in isolation from our pipeline.
 - **Grasp-net licensing blocks a commercial demo** → G1 clears license + aarch64 *before* integration effort; FoundationPose model-free mode is the open fallback.

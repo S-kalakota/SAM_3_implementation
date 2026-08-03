@@ -59,64 +59,57 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
   loosening, or repositioning of the camera or robot base requires repeating
   B1–B3 before vision-guided motion resumes.
 
-### Experimental D0 — measured grasp verification + redo ready (2026-08-03)
-- The operator chose to defer C1/C2/C3 temporarily and try one narrow physical
-  grab using the already validated click-to-base target.
-- Initial physical attempts planned correctly but passed too high to secure the
-  box. Later tests showed that both 35 mm and 45 mm below the clicked surface
-  succeed only intermittently, so neither depth is accepted as reliable.
-- `d0_point_grab.py` now leaves the hover at 100 mm above the clicked surface
-  and accepts `--grasp-depth-mm` from 0–100 mm. Its software default remains
-  5 mm; use an explicit trial depth. It reads `plans.sqlite` directly, chooses
-  the nearer left/right DB
-  grab endpoint, and replays these recorded trajectories point-for-point with
-  their saved timing: `standby_to_*grab`, `*grab_to_*lift`, and
-  `*lift_to_standby`. MoveIt is used only for the short DB-grab-point ↔ new
-  hover connections. Descent and retreat are straight Cartesian paths capped
-  at 20 mm/s.
-- Grasp verification now commands the gripper past the expected box width: the
-  default close target is **60%**, and contact passes only if the measured final
-  position remains at least 8 percentage points more open (>=68%). Peak gripper
-  current is sampled and reported; it is logging-only until successful/failed
-  trials establish a threshold. A clean measured empty close reopens at the
-  grasp point and retreats vertically to hover. Before retrying, it returns
-  only to the selected proven DB left/right grab pose, verifies that anchor,
-  and plans back to the clicked hover; it does **not** return to `standby`
-  between attempts. The next attempt is 5 mm deeper by default and keeps the
-  same XY and fixed DB orientation. Missing telemetry, ambiguous feedback, or
-  a failed reopen disables the retry. A passed check is verified again at
-  `standby` to detect a slipped object; a final failure still returns to
-  `standby` after retries are exhausted.
-- Retry behavior is configurable with `--grasp-retries` (default 1, maximum 3)
-  and `--retry-step-mm` (default 5, maximum 20). Initial depth plus all retries
-  may not exceed the existing 100 mm experimental cap. Every close emits a
-  machine-readable `GRASP_ATTEMPT_RESULT` using schema
-  `fr5.grasp_attempt.v1`; this keeps the action, feedback, and outcome separate
-  so a later VLA executive can choose the next action without replacing the
-  proven motion layer.
-- Execution is refused unless the live arm is within 0.02 rad of the recorded
-  DB standby start. Adjacent saved-trajectory endpoints are validated within
-  0.005 rad before any motion; the current DB differs by less than 0.0001 rad.
-- Plan-only is the default. Real execution requires both `--execute` and
-  `--confirm-ungated-grab`, plus a target clicked within the last 10 minutes.
-- Before adding feedback, build and both left/right full plans passed. A full
-  left-side mock execution
-  replayed all 228 recorded DB points, reached the selected TCP point, retreated,
-  and returned through the two saved return trajectories to `standby`. The new
-  measured grasp pass/fail behavior passed an isolated full-sequence mock and
-  the operator reports that the measured check works on the rig. An isolated
-  domain-99 execution proved the original direct-hover redo path. That route
-  was superseded the same day: the retry now resets through the selected DB
-  left/right grab pose before re-approaching the clicked hover. A second
-  isolated domain-99 execution validated the revised route end to end: 35 mm
-  empty close → open → clicked hover → verified `rightgrab` DB anchor → clicked
-  hover → 40 mm verified grasp → normal saved DB return. Its first live
-  validation remains pending.
-- This experiment does not complete C1-C3 or D1/D2. There is still no table
-  plane, object-height/width check, bin-wall gate, or environment collision
-  scene. Gripper feedback detects blocked closure but does not measure contact
-  with the gripper back or determine the correct depth; the single 5 mm redo is
-  a bounded heuristic, not depth perception.
+### Experimental D0 — retry choreography live-validated (2026-08-03)
+
+- The operator temporarily deferred C1/C2/C3 and completed constrained physical
+  clicked-point grasp trials. `d0_point_grab.py` consumes the accepted
+  camera-to-base target, reads `plans.sqlite`, chooses the nearer proven
+  left/right grab endpoint, and replays the recorded standby/grab/lift/standby
+  trajectories point-for-point. MoveIt plans only the short DB-endpoint ↔ new
+  hover links plus straight Cartesian descents and retreats.
+- The hover remains 100 mm above the selected surface. Grasp depth accepts
+  0–100 mm, but that is an experimental software range rather than a verified
+  safe range. Both 35 mm and 45 mm have picked the flexible box intermittently;
+  neither is a reliable universal depth. Large retry steps such as 20 mm and a
+  final 90 mm descent are not accepted operating defaults.
+- Grasp verification uses measured jaw position. A close passes when the final
+  position is at least 8 percentage points above the commanded close value:
+  60% requires >=68%, 40% requires >=48%, and 0% requires >=8%. The gripper's
+  reported current has remained 0% in these trials, so current is logged but is
+  not a usable decision signal yet. Because the box is flexible, it can deform
+  all the way to the command and be incorrectly classified as an empty close;
+  position-only verification is therefore useful but not sufficient.
+- A live three-attempt run validated the complete redo choreography at 25, 30,
+  and 35 mm. After attempts 1 and 2, the gripper confirmed a 100% reopen, the
+  arm retreated vertically to hover, reset only through the selected DB grab
+  anchor, re-approached, and descended 5 mm deeper. After the third failure the
+  arm returned through the exact DB lift path to standby; its final reopen is
+  the unreliable 0%-for-100% case noted below. Grasp-point errors were
+  0.12–0.17 mm and final retreat-hover errors were 0.17–0.19 mm. This proves
+  the retry motion on real hardware; it does **not** prove successful
+  reacquisition.
+- Retries currently change only Z. They reuse the same XY and fixed left/right
+  DB wrist orientation, so a point that is off-center or a rotated box will
+  still be missed at every depth. Segmentation-center targeting is the next fix;
+  mask-derived yaw follows immediately after it.
+- `--grasp-retries` allows up to three retries and `--retry-step-mm` up to 20
+  mm. Every close emits `GRASP_ATTEMPT_RESULT` with schema
+  `fr5.grasp_attempt.v1`, which is the feedback contract the VLA executive will
+  consume. A final failure returns the arm to standby when recovery feedback
+  remains trustworthy.
+- Gripper command handling was hardened: `MoveGripper` now waits long enough
+  for the server's motion window, and a timeout is treated as an unknown result;
+  it is not followed by automatic reconfiguration, activation, or a duplicate
+  motion command. Two reliability issues remain before unattended VLA motion:
+  frequent direct `fault=1` telemetry after activation, and a live reopen that
+  reported position 0% for a commanded 100% while `motion_done` appeared true.
+  Reopen success must be based on the measured position near the requested
+  value, not the motion-done flag alone, and startup needs a deliberate
+  activation/health wait.
+- Plan-only remains the default. Execution requires `--execute`,
+  `--confirm-ungated-grab`, a fresh target, and the arm at the recorded DB
+  standby start. This experiment still has no table plane, object-width/bin-wall
+  gate, or environment collision scene.
 
 ### Infrastructure fixed along the way
 - `~/fairino5` was renamed to `~/fairino_ros_connector`; re-pointed the
@@ -163,41 +156,43 @@ Session notes, updated 2026-08-03. Continues `Second_plan.md`. All robot code li
 
 ## What's next (in order)
 
-1. **Validate the miss redo:** click the box, plan at a trial depth, then
-   execute while recording both attempt results. A clean miss at 35 mm should
-   reopen, return to hover, reset through the selected DB grab pose, re-approach
-   the clicked hover, and retry at 40 mm:
-
-   ```bash
-   ros2 launch fr5_bringup a1_bringup.launch.py sim:=false
-   ros2 run fr5_bringup b3_pick_point.py
-   ros2 run fr5_bringup d0_point_grab.py \
-     --target-file=/tmp/fr5_b3_target.json --grasp-depth-mm=35 \
-     --grasp-close-pct=60 --grasp-retries=1 --retry-step-mm=5
-   ros2 run fr5_bringup d0_point_grab.py \
-     --target-file=/tmp/fr5_b3_target.json --grasp-depth-mm=35 \
-     --grasp-close-pct=60 --grasp-retries=1 --retry-step-mm=5 \
-     --execute --confirm-ungated-grab
-   ros2 run fr5_bringup a2_gripper.py --open
-   ```
-
-   The arm must start at the recorded DB standby point. Stop unless preflight
-   reports three validated DB trajectories plus eight planned new segments for
-   the two allowed attempts, including both retry-reset connections.
-   Keep the full path clear and a hand on the e-stop. Require `GRASP
-   VERIFICATION PASS` before treating the pickup as successful. Confirm that a
-   failed first close prints `outcome: empty_close` in its structured record,
-   reopens, retreats fully to hover, visits and verifies the selected DB grab
-   pose, returns to clicked hover, and only then descends the extra 5 mm.
-2. **Calibrate feedback:** record final position and peak current for several
-   known successful and empty/failed closes, then set a nonzero
-   `--min-grasp-current-pct` only if the distributions separate reliably.
-3. **Deferred, not complete:** C1 support geometry, C2 `GraspTarget`, and C3
-   safety gating remain the path from this experiment to a repeatable picker.
+1. **VLA input — voice to constrained intent.** Add speech-to-text, then map
+   the transcript to a small command schema such as `action`, `object`, and an
+   optional spatial qualifier. Show or speak back the interpreted request
+   before motion. The language model selects intent; it never emits joints,
+   poses, or raw gripper commands.
+2. **VLA target — requested mask to a robust center point.** Connect the
+   resident `/segment` service, select the requested object's mask, and start
+   from its centroid. If that pixel is outside an irregular mask or has invalid
+   depth, use the nearest valid in-mask pixel or the mask's interior
+   distance-transform maximum. Take median depth from a small in-mask patch,
+   reject sparse/noisy depth, transform through accepted `T_base_cam.json`, and
+   write the same target contract that D0 already consumes.
+3. **Prove perception before grasping.** First display the transcript, selected
+   mask, chosen center, depth, and base-frame XYZ without moving. Then run
+   plan-only and 100 mm hover-only trials at varied box positions. Only after
+   those pass should a confirmed one-object pickup call the existing D0 motion
+   layer and feed `fr5.grasp_attempt.v1` results back to the VLA.
+4. **Harden gripper state before unattended execution.** Add an activation
+   settle/health check, reject direct `fault=1`, and require measured reopen
+   position near the command. Collect successful/empty/flexible-box trials;
+   use current only if nonzero readings eventually separate the outcomes.
+5. **Add orientation immediately after center-pick works.** Estimate the
+   selected mask's major/minor axes, convert the grasp axis through camera 3D
+   into base-frame yaw, align the jaws across the short dimension, preview it,
+   and test rotated boxes at 0/30/45/60/90 degrees. Keep the top-down approach
+   and choose the equivalent reachable wrist yaw nearest a proven DB
+   orientation. Low-confidence orientation must fall back to the current DB
+   side or refuse autonomous execution.
+6. **Then finish the production gates and executive.** Add support-plane,
+   width, depth-quality, bin-wall, and reachability checks, followed by the
+   complete voice-commanded pick/place loop. FoundationPose remains the later
+   upgrade for tilt and full 6-DoF pose.
 
 ## Also parked
-- `mask_service.py` (711-line resident masking daemon, Daemon plan) is
-  committed on the `Daemon` branch of SAM_3_implementation — not merged to
-  `main` yet.
+- `mask_service.py` (711-line resident `/segment` daemon) is committed on the
+  `Daemon` branch of `SAM_3_implementation`, not merged to its `main`. It is now
+  a required input to the next VLA milestone: merge it or run that branch and
+  define a stable request/response adapter before wiring voice commands to D0.
 - The repo's symlinks (`src/fairino_description`, `src/fairino_hardware_v3_9_6`)
   are absolute paths — they dangle on any machine that isn't the Thor.
