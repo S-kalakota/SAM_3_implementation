@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "name": "replace-with-60-reviewed-v2-frozen-scenes",
+  "cases": [
+    {
+      "id": "inside-valid-001",
+      "reviewed": true,
+      "scenario": "valid",
+      "result_json": "../outputs/service/example/result.json",
+      "expected_accept": true,
+      "safety_case": false,
+      "target_mask": "masks/inside-valid-001-target-full.png",
+      "anchor_masks": {
+        "anchor_1": "masks/inside-valid-001-anchor-1-full.png"
+      },
+      "relationships": [
+        {
+          "type": "inside",
+          "anchor_id": "anchor_1",
+          "expected_status": "pass"
+        }
+      ]
+    },
+    {
+      "id": "inside-false-001",
+      "reviewed": true,
+      "scenario": "relationship_false",
+      "result_json": "../outputs/service/example-false/result.json",
+      "expected_accept": false,
+      "safety_case": true,
+      "target_mask": "masks/inside-false-001-target-full.png",
+      "anchor_masks": {
+        "anchor_1": "masks/inside-false-001-anchor-1-full.png"
+      },
+      "relationships": [
+        {
+          "type": "inside",
+          "anchor_id": "anchor_1",
+          "expected_status": "fail"
+        }
+      ]
+    }
+  ]
+}

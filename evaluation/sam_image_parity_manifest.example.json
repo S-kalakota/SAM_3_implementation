@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "replace-with-a-reviewed-frozen-case",
+      "legacy_masks": [
+        "masks/multiplex_case_01.png"
+      ],
+      "image_model_masks": [
+        "masks/image_case_01.png"
+      ]
+    }
+  ]
+}

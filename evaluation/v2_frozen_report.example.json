@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "reviewed_scene_count": 60,
+  "target_candidate_recall": 0.95,
+  "anchor_candidate_recall": 0.95,
+  "relationship_pair_accuracy": 0.95,
+  "valid_final_selection_accuracy": 0.95,
+  "wrong_object_acceptances_safety": 0,
+  "mean_final_iou": 0.0,
+  "mean_final_dice": 0.0,
+  "malformed_qwen_responses": 0,
+  "missing_latency_count": 0,
+  "p95_latency_s": 30.0
+}

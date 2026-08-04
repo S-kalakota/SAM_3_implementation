@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "replace-with-labeled-workspace-frames",
+  "cases": [
+    {
+      "id": "target-present-001",
+      "image": "frames/target-present-001.png",
+      "source_phrase": "small orange and white box",
+      "expected_present": true,
+      "expected_mask": "masks/target-present-001.png"
+    },
+    {
+      "id": "target-absent-001",
+      "image": "frames/target-absent-001.png",
+      "source_phrase": "small orange and white box",
+      "expected_present": false,
+      "expected_mask": null
+    }
+  ]
+}

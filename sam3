@@ -7,6 +7,15 @@ SERVICE_NAME="mask_service"
 HEALTH_URL="${SAM3_HEALTH_URL:-http://127.0.0.1:8765/health}"
 PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
 CLIENT_SCRIPT="${PROJECT_ROOT}/scripts/mask_client.py"
+EVALUATION_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_segmentation.py"
+SOAK_SCRIPT="${PROJECT_ROOT}/scripts/segmentation_soak.py"
+INTENT_SHADOW_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_intent_shadow.py"
+IMAGE_PARITY_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_sam_image_parity.py"
+V2_LANGUAGE_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_v2_language.py"
+V2_SYNTHETIC_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_v2_synthetic_scenes.py"
+V2_FROZEN_SCORE_SCRIPT="${PROJECT_ROOT}/scripts/score_v2_frozen_results.py"
+RELATION_CALIBRATION_SCRIPT="${PROJECT_ROOT}/scripts/calibrate_relation_thresholds.py"
+V2_RELEASE_GATES_SCRIPT="${PROJECT_ROOT}/scripts/check_v2_release_gates.py"
 START_TIMEOUT="${SAM3_START_TIMEOUT:-180}"
 
 usage() {
@@ -14,8 +23,9 @@ usage() {
 SAM 3.1 command-line entry point
 
 Normal use:
-  ./sam3 "orange and white box"     Start if needed, then segment
+  ./sam3 "box inside the blue bin"  Qwen interpret, then v2 segment
   ./sam3 orange and white box       Quotes are optional
+  ./sam3 interpret "..."            Print the sealed v2 intent; no frame capture
 
 Service commands:
   ./sam3 start                      Start and wait until ready
@@ -25,13 +35,27 @@ Service commands:
   ./sam3 stop                       Stop service and release the camera
   ./sam3 rebuild                    Rebuild after Docker/dependency changes
 
+Validation commands:
+  ./sam3 evaluate [options]         Run a frozen-frame A/B manifest
+  ./sam3 soak [options] REQUEST     Run a no-motion repeated live check
+  ./sam3 intent-shadow [options]    Check the 40-command intent corpus
+  ./sam3 image-parity [options]     Approve the cached image-model switch
+  ./sam3 v2-language [options]      Evaluate the reviewed 120-command corpus
+  ./sam3 v2-synthetic [options]     Check the 60-scene geometry safety fixture
+  ./sam3 score-v2-frozen [...]      Score reviewed saved v2 scene results
+  ./sam3 calibrate-relations [...]  Grid-search labeled relation thresholds
+  ./sam3 v2-release-gates [...]     Build the aggregate rollout approval
+
 Prompt options accepted by the client:
-  --no-agent-fallback               Use direct SAM only
+  --v1                              Use the retained version-1 rollback API
+  --no-agent-fallback               Version-1 direct SAM only
   --timeout SECONDS                 Override the request timeout
 
 Environment overrides:
   SAM3_START_TIMEOUT                Startup wait in seconds (default: 180)
   SAM3_HEALTH_URL                   Health endpoint URL
+  SAM3_V2_EVALUATION_MODE           Pre-release no-motion v2 evidence mode
+  SAM3_V2_ENABLED                   Production v2 gate (requires approvals)
 EOF
 }
 
@@ -263,6 +287,53 @@ case "${command_name}" in
     ask|run)
         shift
         submit_request "$@"
+        ;;
+    interpret)
+        shift
+        if (( $# == 0 )); then
+            echo "Provide an instruction, for example: ./sam3 interpret \"box inside the bin\"" >&2
+            exit 2
+        fi
+        start_service
+        "${PYTHON_BIN}" "${CLIENT_SCRIPT}" --interpret-only "$@"
+        ;;
+    evaluate)
+        shift
+        start_service
+        "${PYTHON_BIN}" "${EVALUATION_SCRIPT}" "$@"
+        ;;
+    soak)
+        shift
+        start_service
+        "${PYTHON_BIN}" "${SOAK_SCRIPT}" "$@"
+        ;;
+    intent-shadow)
+        shift
+        "${PYTHON_BIN}" "${INTENT_SHADOW_SCRIPT}" "$@"
+        ;;
+    image-parity)
+        shift
+        "${PYTHON_BIN}" "${IMAGE_PARITY_SCRIPT}" "$@"
+        ;;
+    v2-language)
+        shift
+        "${PYTHON_BIN}" "${V2_LANGUAGE_SCRIPT}" "$@"
+        ;;
+    v2-synthetic)
+        shift
+        "${PYTHON_BIN}" "${V2_SYNTHETIC_SCRIPT}" "$@"
+        ;;
+    score-v2-frozen)
+        shift
+        "${PYTHON_BIN}" "${V2_FROZEN_SCORE_SCRIPT}" "$@"
+        ;;
+    calibrate-relations)
+        shift
+        "${PYTHON_BIN}" "${RELATION_CALIBRATION_SCRIPT}" "$@"
+        ;;
+    v2-release-gates)
+        shift
+        "${PYTHON_BIN}" "${V2_RELEASE_GATES_SCRIPT}" "$@"
         ;;
     help|-h|--help)
         usage

@@ -1,0 +1,5962 @@
+{
+  "schema_version": 2,
+  "name": "sam3-v2-reviewed-language-120",
+  "reviewed_count": 120,
+  "actual_whisper_count": 0,
+  "notes": [
+    "Static seed corpus for interpretation-only testing; every case has a reviewed expected entity graph.",
+    "whisper_style cases preserve filler, dropped articles, and punctuation patterns seen in speech transcripts; site-specific raw Whisper captures should be appended, not silently substituted."
+  ],
+  "cases": [
+    {
+      "case_id": "inside_01",
+      "command": "Please find the red box inside the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "inside"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_02",
+      "command": "Uh, grab the small metal bolt within the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "within"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_03",
+      "command": "Could you please locate the striped package in the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "in"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_04",
+      "command": "Find the leftmost bottle inside the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "inside"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_05",
+      "command": "Select the carton marked A17 within the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "within"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_06",
+      "command": "Hey robot, find the orange filter box in the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "in"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_07",
+      "command": "I need the silver cylinder inside the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "inside"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_08",
+      "command": "um pick up blue block within gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "within"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_09",
+      "command": "Move the red parts bin in the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "in"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_10",
+      "command": "Find the yellow lid inside the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "inside"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_11",
+      "command": "Please select the smallest white packet within the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "within"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "inside_12",
+      "command": "Find the red box in the blue bin, above the green tray, and near the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "inside",
+            "anchor_index": 0,
+            "evidence": "in"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "near",
+            "anchor_index": 2,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "inside",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_01",
+      "command": "Please find the red box on top of the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on top of"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_02",
+      "command": "Uh, grab the small metal bolt on the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_03",
+      "command": "Could you please locate the striped package atop the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "atop"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_04",
+      "command": "Find the leftmost bottle on top of the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on top of"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_05",
+      "command": "Select the carton marked A17 on the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_06",
+      "command": "Hey robot, find the orange filter box atop the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "atop"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_07",
+      "command": "I need the silver cylinder on top of the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on top of"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_08",
+      "command": "um pick up blue block on gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_09",
+      "command": "Move the red parts bin atop the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "atop"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_10",
+      "command": "Find the yellow lid on top of the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on top of"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_11",
+      "command": "Please select the smallest white packet on the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "on"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "on_12",
+      "command": "Find the red box atop the blue bin, above the green tray, and near the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "on",
+            "anchor_index": 0,
+            "evidence": "atop"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "near",
+            "anchor_index": 2,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "on",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_01",
+      "command": "Please find the red box to the left of the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "to the left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_02",
+      "command": "Uh, grab the small metal bolt left of the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_03",
+      "command": "Could you please locate the striped package to the left of the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "to the left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_04",
+      "command": "Find the leftmost bottle left of the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_05",
+      "command": "Select the carton marked A17 to the left of the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "to the left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_06",
+      "command": "Hey robot, find the orange filter box left of the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_07",
+      "command": "I need the silver cylinder to the left of the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "to the left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_08",
+      "command": "um pick up blue block left of gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_09",
+      "command": "Move the red parts bin to the left of the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "to the left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_10",
+      "command": "Find the yellow lid left of the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_11",
+      "command": "Please select the smallest white packet to the left of the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "to the left of"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "left_of_12",
+      "command": "Find the red box left of the blue bin, above the green tray, and near the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "left_of",
+            "anchor_index": 0,
+            "evidence": "left of"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "near",
+            "anchor_index": 2,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "left_of",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_01",
+      "command": "Please find the red box to the right of the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "to the right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_02",
+      "command": "Uh, grab the small metal bolt right of the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_03",
+      "command": "Could you please locate the striped package to the right of the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "to the right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_04",
+      "command": "Find the leftmost bottle right of the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_05",
+      "command": "Select the carton marked A17 to the right of the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "to the right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_06",
+      "command": "Hey robot, find the orange filter box right of the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_07",
+      "command": "I need the silver cylinder to the right of the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "to the right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_08",
+      "command": "um pick up blue block right of gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_09",
+      "command": "Move the red parts bin to the right of the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "to the right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_10",
+      "command": "Find the yellow lid right of the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_11",
+      "command": "Please select the smallest white packet to the right of the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "to the right of"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "right_of_12",
+      "command": "Find the red box right of the blue bin, above the green tray, and near the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "right_of",
+            "anchor_index": 0,
+            "evidence": "right of"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "near",
+            "anchor_index": 2,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "right_of",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_01",
+      "command": "Please find the red box above the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "above"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_02",
+      "command": "Uh, grab the small metal bolt over the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "over"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_03",
+      "command": "Could you please locate the striped package above the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "above"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_04",
+      "command": "Find the leftmost bottle over the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "over"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_05",
+      "command": "Select the carton marked A17 above the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "above"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_06",
+      "command": "Hey robot, find the orange filter box over the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "over"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_07",
+      "command": "I need the silver cylinder above the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "above"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_08",
+      "command": "um pick up blue block over gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "over"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_09",
+      "command": "Move the red parts bin above the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "above"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_10",
+      "command": "Find the yellow lid over the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "over"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_11",
+      "command": "Please select the smallest white packet above the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "above"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "above_12",
+      "command": "Find the red box over the blue bin, near the green tray, and beside the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "above",
+            "anchor_index": 0,
+            "evidence": "over"
+          },
+          {
+            "type": "near",
+            "anchor_index": 1,
+            "evidence": "near"
+          },
+          {
+            "type": "next_to",
+            "anchor_index": 2,
+            "evidence": "beside"
+          }
+        ]
+      },
+      "coverage": [
+        "above",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_01",
+      "command": "Please find the red box below the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "below"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_02",
+      "command": "Uh, grab the small metal bolt under the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "under"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_03",
+      "command": "Could you please locate the striped package below the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "below"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_04",
+      "command": "Find the leftmost bottle under the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "under"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_05",
+      "command": "Select the carton marked A17 below the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "below"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_06",
+      "command": "Hey robot, find the orange filter box under the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "under"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_07",
+      "command": "I need the silver cylinder below the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "below"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_08",
+      "command": "um pick up blue block under gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "under"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_09",
+      "command": "Move the red parts bin below the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "below"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_10",
+      "command": "Find the yellow lid under the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "under"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_11",
+      "command": "Please select the smallest white packet below the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "below"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "below_12",
+      "command": "Find the red box under the blue bin, above the green tray, and near the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "below",
+            "anchor_index": 0,
+            "evidence": "under"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "near",
+            "anchor_index": 2,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "below",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_01",
+      "command": "Please find the red box near the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_02",
+      "command": "Uh, grab the small metal bolt close to the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "close to"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_03",
+      "command": "Could you please locate the striped package near the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_04",
+      "command": "Find the leftmost bottle close to the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "close to"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_05",
+      "command": "Select the carton marked A17 near the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_06",
+      "command": "Hey robot, find the orange filter box close to the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "close to"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_07",
+      "command": "I need the silver cylinder near the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_08",
+      "command": "um pick up blue block close to gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "close to"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_09",
+      "command": "Move the red parts bin near the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_10",
+      "command": "Find the yellow lid close to the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "close to"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_11",
+      "command": "Please select the smallest white packet near the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "near_12",
+      "command": "Find the red box close to the blue bin, above the green tray, and beside the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "near",
+            "anchor_index": 0,
+            "evidence": "close to"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "next_to",
+            "anchor_index": 2,
+            "evidence": "beside"
+          }
+        ]
+      },
+      "coverage": [
+        "near",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_01",
+      "command": "Please find the red box next to the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "next to"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_02",
+      "command": "Uh, grab the small metal bolt beside the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "beside"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_03",
+      "command": "Could you please locate the striped package next to the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "next to"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_04",
+      "command": "Find the leftmost bottle beside the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "beside"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_05",
+      "command": "Select the carton marked A17 next to the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "next to"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_06",
+      "command": "Hey robot, find the orange filter box beside the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "beside"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_07",
+      "command": "I need the silver cylinder next to the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "next to"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_08",
+      "command": "um pick up blue block beside gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "beside"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_09",
+      "command": "Move the red parts bin next to the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "next to"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_10",
+      "command": "Find the yellow lid beside the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "beside"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_11",
+      "command": "Please select the smallest white packet next to the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "next to"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "next_to_12",
+      "command": "Find the red box beside the blue bin, near the green tray, and above the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "next_to",
+            "anchor_index": 0,
+            "evidence": "beside"
+          },
+          {
+            "type": "near",
+            "anchor_index": 1,
+            "evidence": "near"
+          },
+          {
+            "type": "above",
+            "anchor_index": 2,
+            "evidence": "above"
+          }
+        ]
+      },
+      "coverage": [
+        "next_to",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_01",
+      "command": "Please find the red box in front of the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_02",
+      "command": "Uh, grab the small metal bolt in front of the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_03",
+      "command": "Could you please locate the striped package in front of the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_04",
+      "command": "Find the leftmost bottle in front of the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_05",
+      "command": "Select the carton marked A17 in front of the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_06",
+      "command": "Hey robot, find the orange filter box in front of the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_07",
+      "command": "I need the silver cylinder in front of the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_08",
+      "command": "um pick up blue block in front of gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_09",
+      "command": "Move the red parts bin in front of the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_10",
+      "command": "Find the yellow lid in front of the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_11",
+      "command": "Please select the smallest white packet in front of the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "in_front_of_12",
+      "command": "Find the red box in front of the blue bin, above the green tray, and near the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "in_front_of",
+            "anchor_index": 0,
+            "evidence": "in front of"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "near",
+            "anchor_index": 2,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "in_front_of",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_01",
+      "command": "Please find the red box behind the blue bin.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "attributes",
+        "polite"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_02",
+      "command": "Uh, grab the small metal bolt behind the large plastic tray and put it in the drop zone.",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": "drop zone",
+        "target": {
+          "mention": "small metal bolt",
+          "head_noun": "bolt",
+          "noun_modifiers": [],
+          "attributes": {
+            "size": [
+              "small"
+            ],
+            "material": [
+              "metal"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "large plastic tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "size": [
+                "large"
+              ],
+              "material": [
+                "plastic"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "filler",
+        "destination",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_03",
+      "command": "Could you please locate the striped package behind the wooden crate?",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "striped package",
+          "head_noun": "package",
+          "noun_modifiers": [],
+          "attributes": {
+            "pattern": [
+              "striped"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "wooden crate",
+            "head_noun": "crate",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "wooden"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "filler",
+        "pattern",
+        "material"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_04",
+      "command": "Find the leftmost bottle behind the rightmost shelf.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "leftmost bottle",
+          "head_noun": "bottle",
+          "noun_modifiers": [],
+          "attributes": {},
+          "selector": "leftmost"
+        },
+        "anchors": [
+          {
+            "mention": "rightmost shelf",
+            "head_noun": "shelf",
+            "noun_modifiers": [],
+            "attributes": {},
+            "selector": "rightmost"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "entity_scoped_selectors"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_05",
+      "command": "Select the carton marked A17 behind the rack marked B4.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "carton marked A17",
+          "head_noun": "carton",
+          "noun_modifiers": [],
+          "attributes": {
+            "marking": [
+              "A17"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "rack marked B4",
+            "head_noun": "rack",
+            "noun_modifiers": [],
+            "attributes": {
+              "marking": [
+                "B4"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "printed_markings",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_06",
+      "command": "Hey robot, find the orange filter box behind the green filter box.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "orange filter box",
+          "head_noun": "box",
+          "noun_modifiers": [
+            "filter"
+          ],
+          "attributes": {
+            "color": [
+              "orange"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "green filter box",
+            "head_noun": "box",
+            "noun_modifiers": [
+              "filter"
+            ],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "repeated_head_nouns",
+        "noun_modifiers",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_07",
+      "command": "I need the silver cylinder behind the black cylinder, please.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "silver cylinder",
+          "head_noun": "cylinder",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "silver"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "black cylinder",
+            "head_noun": "cylinder",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "black"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "repeated_head_nouns",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_08",
+      "command": "um pick up blue block behind gray tote",
+      "expected": {
+        "outcome": "accept",
+        "action": "pick",
+        "destination": null,
+        "target": {
+          "mention": "blue block",
+          "head_noun": "block",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "blue"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "gray tote",
+            "head_noun": "tote",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "gray"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "whisper_style",
+        "missing_articles",
+        "filler"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_09",
+      "command": "Move the red parts bin behind the blue storage bin to the red-bin destination.",
+      "expected": {
+        "outcome": "accept",
+        "action": "move",
+        "destination": "red-bin destination",
+        "target": {
+          "mention": "red parts bin",
+          "head_noun": "bin",
+          "noun_modifiers": [
+            "parts"
+          ],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue storage bin",
+            "head_noun": "bin",
+            "noun_modifiers": [
+              "storage"
+            ],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "destination_words_repeated",
+        "noun_modifiers"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_10",
+      "command": "Find the yellow lid behind the purple tub, not the purple lid.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "yellow lid",
+          "head_noun": "lid",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "yellow"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "purple tub",
+            "head_noun": "tub",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "purple"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "counterfactual_distractor",
+        "attribute_ownership",
+        "repeated_head_nouns"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_11",
+      "command": "Please select the smallest white packet behind the largest cardboard carton.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "smallest white packet",
+          "head_noun": "packet",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "white"
+            ]
+          },
+          "selector": "smallest"
+        },
+        "anchors": [
+          {
+            "mention": "largest cardboard carton",
+            "head_noun": "carton",
+            "noun_modifiers": [],
+            "attributes": {
+              "material": [
+                "cardboard"
+              ]
+            },
+            "selector": "largest"
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "entity_scoped_selectors",
+        "attribute_ownership"
+      ],
+      "reviewed": true
+    },
+    {
+      "case_id": "behind_12",
+      "command": "Find the red box behind the blue bin, above the green tray, and near the silver bottle.",
+      "expected": {
+        "outcome": "accept",
+        "action": "identify",
+        "destination": null,
+        "target": {
+          "mention": "red box",
+          "head_noun": "box",
+          "noun_modifiers": [],
+          "attributes": {
+            "color": [
+              "red"
+            ]
+          },
+          "selector": null
+        },
+        "anchors": [
+          {
+            "mention": "blue bin",
+            "head_noun": "bin",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "blue"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "green tray",
+            "head_noun": "tray",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "green"
+              ]
+            },
+            "selector": null
+          },
+          {
+            "mention": "silver bottle",
+            "head_noun": "bottle",
+            "noun_modifiers": [],
+            "attributes": {
+              "color": [
+                "silver"
+              ]
+            },
+            "selector": null
+          }
+        ],
+        "relationships": [
+          {
+            "type": "behind",
+            "anchor_index": 0,
+            "evidence": "behind"
+          },
+          {
+            "type": "above",
+            "anchor_index": 1,
+            "evidence": "above"
+          },
+          {
+            "type": "near",
+            "anchor_index": 2,
+            "evidence": "near"
+          }
+        ]
+      },
+      "coverage": [
+        "behind",
+        "three_anchors",
+        "multiple_relationships",
+        "complex_language"
+      ],
+      "reviewed": true
+    }
+  ]
+}
