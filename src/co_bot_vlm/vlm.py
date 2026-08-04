@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from .command import SUPPORTED_OBJECT_ALIASES, TaskCommand, supported_objects
+from .command import TaskCommand
 from .errors import BackendUnavailableError, ValidationError
 from .image_source import ImageFrame
 from .visual_grounding import VisualGrounding
@@ -22,18 +22,20 @@ from .visual_grounding import VisualGrounding
 VLM_SCHEMA_VERSION = "object-grounding-v1"
 QWEN_MODEL_ID = os.environ.get(
     "CO_BOT_VLM_QWEN_MODEL_ID",
-    "Qwen/Qwen2.5-VL-3B-Instruct",
+    "Qwen/Qwen2.5-VL-7B-Instruct",
 )
 QWEN_MAX_NEW_TOKENS = 256
 
 GROUNDING_REQUIRED_FIELDS = (
     "object",
     "visible",
-    "confidence",
-    "bbox_xyxy",
     "image_size",
 )
-ALLOWED_FIELDS = set(GROUNDING_REQUIRED_FIELDS)
+OPTIONAL_GROUNDING_FIELDS = (
+    "confidence",
+    "bbox_xyxy",
+)
+ALLOWED_FIELDS = set(GROUNDING_REQUIRED_FIELDS).union(OPTIONAL_GROUNDING_FIELDS)
 MOTION_CONTROL_FIELDS = {
     "joint_angles",
     "pose",
@@ -43,7 +45,7 @@ MOTION_CONTROL_FIELDS = {
     "robot_command",
     "trajectory",
 }
-SUPPORTED_OBJECTS = tuple(supported_objects())
+OPEN_VOCABULARY_OBJECTS = True
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,7 @@ class QwenVLMBackend:
             model=self.model,
             raw_output=raw_output,
             fallback_image_size=image.image_size,
+            target_object=command.object,
             metadata={
                 "max_new_tokens": self.max_new_tokens,
                 "local_files_only": self.local_files_only,
@@ -291,16 +294,55 @@ def build_vlm_response_from_text(
     model: str,
     raw_output: str,
     fallback_image_size: list[int] | None = None,
+    target_object: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> VLMResponse:
-    payload = parse_vlm_json_output(raw_output)
-    payload = _fill_missing_image_size(payload, fallback_image_size)
-    return build_vlm_response(
-        backend=backend,
-        model=model,
-        payload=payload,
-        metadata=metadata,
+    payload = parse_presence_output(
+        raw_output,
+        target_object=target_object,
+        fallback_image_size=fallback_image_size,
     )
+    payload = _fill_missing_image_size(payload, fallback_image_size)
+    payload = _fill_absent_object_defaults(payload)
+    try:
+        return build_vlm_response(
+            backend=backend,
+            model=model,
+            payload=payload,
+            metadata=metadata,
+        )
+    except ValidationError as exc:
+        exc.details.setdefault("raw_preview", _preview_vlm_output(raw_output))
+        raise
+
+
+def parse_presence_output(
+    raw_output: str,
+    *,
+    target_object: str | None = None,
+    fallback_image_size: list[int] | None = None,
+) -> dict[str, Any]:
+    """Parse a presence-only model answer into the internal grounding payload."""
+
+    if "{" in raw_output:
+        payload = parse_vlm_json_output(raw_output)
+        if target_object and not payload.get("object"):
+            payload = {**payload, "object": target_object}
+        return payload
+
+    normalized = _normalize_presence_answer(raw_output)
+    if normalized is None:
+        raise ValidationError(
+            code="vlm_presence_unclear",
+            message="VLM output must clearly answer YES/VISIBLE or NO/NOT VISIBLE.",
+            details={"raw_preview": _preview_vlm_output(raw_output)},
+        )
+
+    return {
+        "object": target_object or "requested object",
+        "visible": normalized,
+        "image_size": fallback_image_size,
+    }
 
 
 def parse_vlm_json_output(raw_output: str) -> dict[str, Any]:
@@ -365,6 +407,18 @@ def _fill_missing_image_size(
     return {**payload, "image_size": fallback_image_size}
 
 
+def _fill_absent_object_defaults(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept compact negative answers while keeping visible detections strict."""
+
+    if payload.get("visible") is not False:
+        return payload
+
+    values = dict(payload)
+    values.setdefault("confidence", 0.0)
+    values.setdefault("bbox_xyxy", None)
+    return values
+
+
 def validate_vlm_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate and canonicalize the restricted object-existence schema."""
 
@@ -398,14 +452,14 @@ def validate_vlm_payload(payload: dict[str, Any]) -> dict[str, Any]:
             details={"unexpected": unexpected, "schema_version": VLM_SCHEMA_VERSION},
         )
 
-    canonical_object = _canonicalize_object(payload["object"])
+    object_name = _normalize_text(_require_string(payload, "object"))
     visible = _require_bool(payload, "visible")
-    confidence = _require_confidence(payload["confidence"])
+    confidence = _require_confidence(payload.get("confidence", 1.0 if visible else 0.0))
     image_size = _validate_image_size(payload["image_size"])
-    bbox = _validate_bbox(payload["bbox_xyxy"], image_size, visible=visible)
+    bbox = _validate_bbox(payload.get("bbox_xyxy"), image_size, visible=visible)
 
     validated = {
-        "object": canonical_object,
+        "object": object_name,
         "visible": visible,
         "confidence": confidence,
         "bbox_xyxy": bbox,
@@ -435,45 +489,42 @@ def build_vlm_prompt(target_object: str, image_size: list[int] | None = None) ->
         else ""
     )
     return (
-        "You are a visual grounding model. Verify whether the requested target "
-        "object exists in one RGB image. "
-        "Return exactly one raw JSON object and nothing else. "
-        "The first character must be { and the last character must be }. "
-        "Do not wrap the answer in ```json or any Markdown fence. "
-        "Do not parse, rewrite, approve, or describe the robot command. "
-        "Only ground the requested target object. "
-        "Allowed schema: "
-        '{"object":"red cup|blue box|green bottle",'
-        '"visible":true|false,"confidence":0.0-1.0,'
-        '"bbox_xyxy":[x1,y1,x2,y2] or null,'
-        '"image_size":[width,height]}. '
+        "Look at the image and answer only whether the requested target object "
+        "is visible in the frame. Do not locate it, describe it, or infer robot "
+        "actions. Reply with exactly YES if the object is visible, or exactly NO "
+        "if it is not visible. "
         f"{image_size_instruction}"
-        "Set object to the requested target exactly after allowed alias "
-        "normalization. If the target is not visible, set visible to false, "
-        "confidence to 0.0, and bbox_xyxy to null. "
-        "If visible is true, use integer pixel coordinates within image_size. "
-        "Allowed object synonyms are cup/red mug for red cup and bottle for "
-        "green bottle. There are no synonyms for blue box. "
-        "Do not include action, destination, source, joint_angles, pose, "
-        "object_pose, velocity, gripper, robot_command, trajectory, or any "
-        "other fields. "
         f"Requested target object: {target_object}"
     )
 
 
-def _canonicalize_object(value: Any) -> str:
-    object_name = _normalize_text(_require_string({"object": value}, "object"))
-    canonical = SUPPORTED_OBJECT_ALIASES.get(object_name)
-    if canonical is None:
-        raise ValidationError(
-            code="unsupported_object",
-            message=(
-                f"Unsupported object in VLM output: {value}. "
-                f"Supported objects are: {', '.join(SUPPORTED_OBJECTS)}."
-            ),
-            details={"object": value, "supported_objects": list(SUPPORTED_OBJECTS)},
-        )
-    return canonical
+def _normalize_presence_answer(raw_output: str) -> bool | None:
+    answer = re.sub(r"\s+", " ", raw_output.strip().lower()).strip(" .!?:;,'\"")
+    if not answer:
+        return None
+    negative_patterns = (
+        "no",
+        "not visible",
+        "not present",
+        "absent",
+        "not in frame",
+        "not in the frame",
+        "cannot see",
+        "can't see",
+    )
+    positive_patterns = (
+        "yes",
+        "visible",
+        "present",
+        "in frame",
+        "in the frame",
+        "i can see",
+    )
+    if any(pattern in answer for pattern in negative_patterns):
+        return False
+    if any(pattern in answer for pattern in positive_patterns):
+        return True
+    return None
 
 
 def _require_string(payload: dict[str, Any], key: str) -> str:
@@ -542,6 +593,8 @@ def _validate_bbox(
     *,
     visible: bool,
 ) -> list[int] | None:
+    if value is None:
+        return None
     if not visible:
         return None
     if (
@@ -578,7 +631,7 @@ def _metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     values["schema_version"] = VLM_SCHEMA_VERSION
     values["required_fields"] = list(GROUNDING_REQUIRED_FIELDS)
     values["motion_control_fields_rejected"] = True
-    values["supported_objects"] = list(SUPPORTED_OBJECTS)
+    values["open_vocabulary_objects"] = OPEN_VOCABULARY_OBJECTS
     return values
 
 

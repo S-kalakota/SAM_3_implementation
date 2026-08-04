@@ -15,6 +15,7 @@ from .errors import BackendUnavailableError, ValidationError
 
 CAMERA_WARMUP_FRAMES = 3
 CAMERA_READ_ATTEMPTS = 10
+STEREO_ASPECT_RATIO_THRESHOLD = 3.0
 
 
 @dataclass(frozen=True)
@@ -238,6 +239,8 @@ def _capture_frame_from_open_camera(
     frame_number: int,
 ) -> ImageFrame:
     frame, read_metadata = _read_live_frame(capture, camera_index)
+    original_height, original_width = _frame_dimensions(frame, camera_index)
+    frame, stereo_metadata = _select_single_camera_view(frame, original_width, original_height)
     height, width = _frame_dimensions(frame, camera_index)
     try:
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -264,9 +267,29 @@ def _capture_frame_from_open_camera(
             "snapshot_path": snapshot_path,
             "frame_number": frame_number,
             **read_metadata,
+            **stereo_metadata,
         },
         image=rgb_frame,
     )
+
+
+def _select_single_camera_view(
+    frame: Any,
+    original_width: int,
+    original_height: int,
+) -> tuple[Any, dict[str, Any]]:
+    aspect_ratio = original_width / original_height
+    if aspect_ratio < STEREO_ASPECT_RATIO_THRESHOLD:
+        return frame, {"stereo_crop_applied": False}
+
+    half_width = original_width // 2
+    return frame[:, :half_width], {
+        "stereo_crop_applied": True,
+        "stereo_crop_view": "left",
+        "original_width": original_width,
+        "original_height": original_height,
+        "original_aspect_ratio": aspect_ratio,
+    }
 
 
 def _open_video_capture(cv2: Any, camera_index: int) -> tuple[Any, str]:

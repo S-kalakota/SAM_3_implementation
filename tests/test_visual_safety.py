@@ -30,7 +30,7 @@ class VisualSafetyTests(unittest.TestCase):
         decision = check_verified_command(command, grounding())
 
         self.assertTrue(decision.approved)
-        self.assertEqual(decision.reason, "command is valid and object visually verified")
+        self.assertEqual(decision.reason, "object is present in the frame")
 
     def test_not_visible_rejected(self) -> None:
         decision = check_verified_command(
@@ -41,28 +41,26 @@ class VisualSafetyTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertIn("object not visually verified", decision.reason)
 
-    def test_wrong_object_rejected(self) -> None:
+    def test_object_name_mismatch_does_not_override_visual_existence(self) -> None:
         decision = check_verified_command(
             TaskCommand("pick_and_place", "green bottle", "drop zone"),
             grounding(object="red cup"),
         )
 
-        self.assertFalse(decision.approved)
-        self.assertIn("grounded object and command object differ", decision.reason)
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "object is present in the frame")
 
-    def test_low_confidence_rejected(self) -> None:
-        verification = check_visual_grounding(grounding(confidence=0.79))
+    def test_low_confidence_does_not_override_visible_answer(self) -> None:
+        verification = check_visual_grounding(grounding(confidence=0.0))
 
-        self.assertFalse(verification.approved)
-        self.assertEqual(verification.reason, "visual confidence below threshold")
+        self.assertTrue(verification.approved)
+        self.assertEqual(verification.reason, "object visually verified")
 
-    def test_bbox_out_of_bounds_rejected(self) -> None:
-        verification = check_visual_grounding(
-            grounding(bbox_xyxy=[10, 10, 1300, 100], image_size=[1280, 720])
-        )
+    def test_bbox_is_not_required_for_presence_only_check(self) -> None:
+        verification = check_visual_grounding(grounding(bbox_xyxy=None))
 
-        self.assertFalse(verification.approved)
-        self.assertEqual(verification.reason, "visual bounding box is invalid")
+        self.assertTrue(verification.approved)
+        self.assertEqual(verification.reason, "object visually verified")
 
     def test_return_home_does_not_require_grounding(self) -> None:
         command = parse_vla_output({"action": "return_home"})

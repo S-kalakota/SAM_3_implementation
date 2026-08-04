@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from co_bot_vlm.errors import ValidationError
 from co_bot_vlm.image_source import ImageFrame
 from co_bot_vlm.pipeline import run_live_pipeline, run_pipeline, run_verification
 from co_bot_vlm.transcript import Transcript
@@ -87,8 +86,8 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertTrue(envelope["visual_verification"]["approved"])
         self.assertTrue(envelope["safety"]["approved"])
         self.assertEqual(envelope["visual_verification"]["reason"], "object visually verified")
-        self.assertIn("object visually verified", envelope["safety"]["reason"])
-        self.assertIn("object visually verified", envelope["next"]["description"])
+        self.assertEqual(envelope["safety"]["reason"], "object is present in the frame")
+        self.assertIn("object is present in the frame", envelope["next"]["description"])
         self.assertEqual(envelope["next"]["status"], "ready_for_later_phase")
 
     def test_pipeline_blocked_by_visual_safety(self) -> None:
@@ -126,13 +125,13 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertFalse(envelope["visual_verification"]["approved"])
         self.assertFalse(envelope["safety"]["approved"])
         self.assertEqual(envelope["visual_verification"]["reason"], "object not visually verified")
-        self.assertIn("blocked by safety", envelope["safety"]["reason"])
-        self.assertIn("blocked by safety", envelope["next"]["description"])
+        self.assertIn("object not approved", envelope["safety"]["reason"])
+        self.assertIn("object not approved", envelope["next"]["description"])
         self.assertEqual(envelope["next"]["status"], "blocked_by_safety")
 
-    def test_pipeline_blocks_when_grounded_object_differs_from_intent(self) -> None:
-        class WrongObjectBackend:
-            name = "wrong-object"
+    def test_pipeline_approval_depends_on_visual_existence_not_object_allow_list(self) -> None:
+        class OpenObjectBackend:
+            name = "open-object"
             model = "test"
 
             def ground(self, command, image: ImageFrame):
@@ -140,7 +139,7 @@ class PipelineIntegrationTests(unittest.TestCase):
                     backend=self.name,
                     model=self.model,
                     payload={
-                        "object": "green bottle",
+                        "object": command.object,
                         "visible": True,
                         "confidence": 0.95,
                         "bbox_xyxy": [0, 10, 100, 200],
@@ -150,7 +149,7 @@ class PipelineIntegrationTests(unittest.TestCase):
 
         envelope = run_verification(
             transcript=Transcript(
-                text="pick up the blue box to the drop zone",
+                text="pick up the orange object to the drop zone",
                 source="text",
             ),
             image=ImageFrame(
@@ -159,14 +158,12 @@ class PipelineIntegrationTests(unittest.TestCase):
                 width=640,
                 height=480,
             ),
-            backend=WrongObjectBackend(),
+            backend=OpenObjectBackend(),
         )
 
-        self.assertFalse(envelope["safety"]["approved"])
-        self.assertIn(
-            "grounded object and command object differ",
-            envelope["safety"]["reason"],
-        )
+        self.assertTrue(envelope["safety"]["approved"])
+        self.assertEqual(envelope["intent"]["object"], "orange object")
+        self.assertEqual(envelope["safety"]["reason"], "object is present in the frame")
 
     def test_pipeline_sends_parsed_intent_to_grounding_backend(self) -> None:
         class CapturingBackend:
@@ -227,59 +224,21 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(envelope["intent"]["object"], "blue box")
         self.assertEqual(envelope["vlm"]["output"]["object"], "blue box")
 
-    def test_pipeline_rejects_blue_cube(self) -> None:
+    def test_pipeline_accepts_blue_cube(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             image = Path(tmpdir) / "frame.png"
             image.write_bytes(minimal_png())
 
-            with self.assertRaises(ValidationError) as context:
-                run_pipeline(
-                    text="pick up the blue cube to the drop zone",
-                    image_file=image,
-                    camera_index=None,
-                    vlm_backend="mock",
-                )
-
-        self.assertEqual(context.exception.code, "unsupported_object")
-
-    def test_pipeline_rejects_vlm_object_rewrite_from_unsupported_transcript(self) -> None:
-        class RewritingBackend:
-            name = "rewriting"
-            model = "test"
-
-            def ground(self, command, image: ImageFrame):
-                return build_vlm_response(
-                    backend=self.name,
-                    model=self.model,
-                    payload={
-                        "object": "blue box",
-                        "visible": True,
-                        "confidence": 0.95,
-                        "bbox_xyxy": [0, 10, 100, 200],
-                        "image_size": [640, 480],
-                    },
-                )
-
-        transcript = Transcript(
-            text="pick up the orange object to the drop zone",
-            source="text",
-        )
-        image = ImageFrame(
-            source_type="image_file",
-            path="/tmp/frame.png",
-            width=640,
-            height=480,
-        )
-
-        with self.assertRaises(ValidationError) as context:
-            run_verification(
-                transcript=transcript,
-                image=image,
-                backend=RewritingBackend(),
+            envelope = run_pipeline(
+                text="pick up the blue cube to the drop zone",
+                image_file=image,
+                camera_index=None,
+                vlm_backend="mock",
             )
 
-        self.assertEqual(context.exception.code, "unsupported_object")
-        self.assertEqual(context.exception.details["object"], "orange object")
+        self.assertTrue(envelope["safety"]["approved"])
+        self.assertEqual(envelope["intent"]["object"], "blue cube")
+        self.assertEqual(envelope["vlm"]["output"]["object"], "blue cube")
 
     def test_voice_transcript_enters_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

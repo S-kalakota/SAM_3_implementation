@@ -44,33 +44,32 @@ class VLMAdapterTests(unittest.TestCase):
         self.assertEqual(result.grounding.object, "blue box")
         self.assertEqual(result.payload["object"], "blue box")
 
-    def test_vlm_rejects_blue_cube(self) -> None:
-        with self.assertRaises(ValidationError) as context:
-            validate_vlm_output(vlm_payload(object="blue cube"))
+    def test_vlm_accepts_blue_cube(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="blue cube"))
 
-        self.assertEqual(context.exception.code, "unsupported_object")
+        self.assertEqual(result.grounding.object, "blue cube")
+        self.assertEqual(result.payload["object"], "blue cube")
 
-    def test_vlm_rejects_blue_block(self) -> None:
-        with self.assertRaises(ValidationError) as context:
-            validate_vlm_output(vlm_payload(object="blue block"))
+    def test_vlm_accepts_blue_block(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="blue block"))
 
-        self.assertEqual(context.exception.code, "unsupported_object")
+        self.assertEqual(result.grounding.object, "blue block")
+        self.assertEqual(result.payload["object"], "blue block")
 
-    def test_vlm_rejects_unsupported_object(self) -> None:
-        with self.assertRaises(ValidationError) as context:
-            validate_vlm_output(vlm_payload(object="banana"))
+    def test_vlm_accepts_open_vocabulary_object(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="banana"))
 
-        self.assertEqual(context.exception.code, "unsupported_object")
+        self.assertEqual(result.grounding.object, "banana")
+        self.assertEqual(result.payload["object"], "banana")
 
-    def test_vlm_rejects_missing_bbox(self) -> None:
+    def test_vlm_accepts_missing_bbox_for_visible_presence(self) -> None:
         payload = vlm_payload()
         del payload["bbox_xyxy"]
 
-        with self.assertRaises(ValidationError) as context:
-            validate_vlm_output(payload)
+        result = validate_vlm_output(payload)
 
-        self.assertEqual(context.exception.code, "vlm_required_fields_missing")
-        self.assertEqual(context.exception.details["missing"], ["bbox_xyxy"])
+        self.assertTrue(result.grounding.visible)
+        self.assertIsNone(result.grounding.bbox_xyxy)
 
     def test_vlm_response_fills_missing_image_size_from_image_source(self) -> None:
         payload = vlm_payload(bbox_xyxy=[280, 190, 360, 310])
@@ -84,6 +83,47 @@ class VLMAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(response.output["image_size"], [1280, 720])
+
+    def test_vlm_response_fills_compact_not_visible_defaults(self) -> None:
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output=json.dumps({
+                "object": "green water bottle",
+                "visible": False,
+                "image_size": [1280, 720],
+            }),
+        )
+
+        self.assertFalse(response.output["visible"])
+        self.assertEqual(response.output["confidence"], 0.0)
+        self.assertIsNone(response.output["bbox_xyxy"])
+
+    def test_vlm_response_accepts_plain_yes(self) -> None:
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output="YES",
+            target_object="green water bottle",
+            fallback_image_size=[1280, 720],
+        )
+
+        self.assertTrue(response.output["visible"])
+        self.assertEqual(response.output["object"], "green water bottle")
+        self.assertIsNone(response.output["bbox_xyxy"])
+
+    def test_vlm_response_accepts_plain_no(self) -> None:
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output="NO",
+            target_object="green water bottle",
+            fallback_image_size=[1280, 720],
+        )
+
+        self.assertFalse(response.output["visible"])
+        self.assertEqual(response.output["confidence"], 0.0)
+        self.assertIsNone(response.output["bbox_xyxy"])
 
     def test_vlm_accepts_not_visible_without_bbox(self) -> None:
         result = validate_vlm_output(
@@ -166,16 +206,19 @@ class VLMAdapterTests(unittest.TestCase):
 
         self.assertEqual(response.backend, "mock")
         self.assertEqual(response.model, "deterministic-contract-v1")
-        self.assertEqual(response.output["object"], "red cup")
+        self.assertEqual(response.output["object"], "cup")
         self.assertEqual(response.metadata["schema_version"], VLM_SCHEMA_VERSION)
         self.assertTrue(response.metadata["motion_control_fields_rejected"])
+        self.assertTrue(response.metadata["open_vocabulary_objects"])
 
     def test_vlm_prompt_is_grounding_only(self) -> None:
         prompt = build_vlm_prompt("blue box", [1024, 768])
 
         self.assertIn("Requested target object: blue box", prompt)
-        self.assertIn("Do not parse, rewrite, approve, or describe the robot command", prompt)
-        self.assertIn("Do not include action, destination, source", prompt)
+        self.assertIn("answer only whether", prompt)
+        self.assertIn("Reply with exactly YES", prompt)
+        self.assertIn("exactly NO", prompt)
+        self.assertNotIn("bbox_xyxy", prompt)
 
 
 if __name__ == "__main__":

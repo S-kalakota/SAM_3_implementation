@@ -10,8 +10,8 @@ or motion commands.
 ## Current Flow
 
 1. `Whisper` or `--text` produces a transcript string.
-2. The instruction parser checks the transcript against the current safety
-   object allow-list and extracts intent:
+2. The instruction parser extracts an open-vocabulary target object phrase and
+   intent:
 
    ```json
    {
@@ -23,45 +23,28 @@ or motion commands.
    ```
 
 3. The Qwen/mock VLM receives only the parsed target object and RGB image. It
-   returns visual grounding evidence:
+   answers whether that object is visible in the frame.
 
-   ```json
-   {
-     "object": "blue box",
-     "visible": true,
-     "confidence": 0.95,
-     "bbox_xyxy": [0, 173, 792, 652],
-     "image_size": [1024, 768]
-   }
-   ```
+4. The visual gate approves only when the requested object is present in the
+   frame.
 
-4. Safety approves only when the parsed intent target and grounded object match,
-   the object is visible, confidence is high enough, and the box is valid.
+## Current Visual Approval Guidelines
 
-## Current Safety Guidelines
+Approval means the requested object was visually verified in the current frame.
+It does not mean the robot is allowed to move yet.
 
-Approval means the command is valid and the requested object was visually
-verified. It does not mean the robot is allowed to move yet.
+The target object is open vocabulary: `green water bottle`, `blue block`,
+`orange object`, or another noun phrase can be parsed and sent to the VLM.
 
-Supported object targets:
-
-- `red cup`: aliases `cup`, `red mug`, `mug`
-- `blue box`
-- `green bottle`: alias `bottle`
-
-Visual approval requires:
-
-- object is marked visible;
-- confidence is at least `0.80`;
-- bounding box is inside the image bounds;
-- grounded object matches the parsed command object after alias normalization.
-
-Unsupported objects, such as `orange object`, are blocked.
+Visual approval requires only that the object is marked visible in the current
+frame. Qwen is prompted to answer exactly `YES` or `NO`; the adapter converts
+that to the internal result.
 
 The VLM grounding schema is `object-grounding-v1`. Qwen output with
 `action`, `source`, `destination`, robot poses, trajectories, gripper commands,
 or other motion fields is rejected because those belong to later robot-control
-stages.
+stages. The VLM is prompted to answer only whether the requested object exists
+in the frame.
 
 ## Run
 
@@ -71,7 +54,7 @@ python3 -m venv .venv
 ```
 
 ```bash
-.venv/bin/python -m co_bot_vlm.cli --text "pick up the red cup to the drop zone" --image-file path/to/frame.jpg
+.venv/bin/python -m co_bot_vlm.cli --text "pick up the green water bottle to the drop zone" --image-file path/to/frame.jpg
 ```
 
 The default `mock` VLM backend is deterministic. With `--image-file`, it does
@@ -79,7 +62,7 @@ not require camera hardware, model weights, Transformers, or the ZED SDK.
 
 ```bash
 .venv/bin/python -m co_bot_vlm.cli --help
-.venv/bin/python -m co_bot_vlm.cli --vlm-backend qwen --text "pick up the red cup" --image-file path/to/frame.jpg
+.venv/bin/python -m co_bot_vlm.cli --vlm-backend qwen --text "pick up the green water bottle" --image-file path/to/frame.jpg
 ```
 
 Qwen setup is optional and heavier than the mock backend:
@@ -88,11 +71,11 @@ Qwen setup is optional and heavier than the mock backend:
 .venv/bin/python -m pip install -e ".[qwen]"
 .venv/bin/python - <<'PY'
 from huggingface_hub import snapshot_download
-snapshot_download("Qwen/Qwen2.5-VL-3B-Instruct", repo_type="model")
+snapshot_download("Qwen/Qwen2.5-VL-7B-Instruct", repo_type="model")
 PY
 ```
 
-The default local Qwen model is `Qwen/Qwen2.5-VL-3B-Instruct`. Override it with
+The default local Qwen model is `Qwen/Qwen2.5-VL-7B-Instruct`. Override it with
 `--qwen-model` or `CO_BOT_VLM_QWEN_MODEL_ID`. On macOS, the Qwen backend defaults
 to `CO_BOT_VLM_QWEN_DEVICE_MAP=cpu` because the Apple MPS backend can exceed
 Metal temporary tensor limits for this model. CPU inference is slower but avoids
@@ -102,7 +85,7 @@ For a live camera snapshot, install the project dependencies and pass a generic
 camera index:
 
 ```bash
-.venv/bin/python -m co_bot_vlm.cli --text "pick up the red cup to the drop zone" --camera-index 0
+.venv/bin/python -m co_bot_vlm.cli --text "pick up the green water bottle to the drop zone" --camera-index 0
 ```
 
 The `--camera-index` path captures one warmed-up RGB frame through OpenCV and
@@ -114,8 +97,8 @@ For a continuous camera check, add `--live`. Use `--max-frames` for a bounded
 test or omit it and stop with Ctrl-C:
 
 ```bash
-.venv/bin/co-bot-vlm --live --camera-index 0 --max-frames 5 --text "pick up the red cup to the drop zone"
-.venv/bin/co-bot-vlm --live --camera-index 0 --stop-on-approved --text "pick up the blue box to the bin"
+.venv/bin/co-bot-vlm --live --camera-index 0 --max-frames 5 --text "pick up the green water bottle to the drop zone" --plain
+.venv/bin/co-bot-vlm --live --camera-index 0 --stop-on-approved --text "pick up the blue block to the bin" --plain
 ```
 
 For spoken commands, install the voice extras, download the default Whisper

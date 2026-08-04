@@ -17,16 +17,6 @@ class TaskCommand:
     source: str | None = None
 
 
-SUPPORTED_OBJECT_ALIASES = {
-    "red cup": "red cup",
-    "cup": "red cup",
-    "red mug": "red cup",
-    "mug": "red cup",
-    "blue box": "blue box",
-    "green bottle": "green bottle",
-    "bottle": "green bottle",
-}
-
 
 def parse_vla_output(payload: dict[str, Any]) -> TaskCommand:
     """Validate only the command fields promised for this phase."""
@@ -77,19 +67,12 @@ def parse_transcript_command(text: str) -> TaskCommand:
     if re.search(r"\b(?:return home|go home|home position)\b", normalized):
         return TaskCommand(action="return_home")
 
-    object_name = _extract_supported_object(normalized)
-    if object_name is None:
-        requested_object = _extract_requested_object(normalized)
+    object_name = _extract_requested_object(normalized)
+    if object_name == "requested object":
         raise ValidationError(
-            code="unsupported_object",
-            message=(
-                f"Unsupported object in transcript: {requested_object}. "
-                f"Supported objects are: {', '.join(supported_objects())}."
-            ),
-            details={
-                "object": requested_object,
-                "supported_objects": supported_objects(),
-            },
+            code="missing_object",
+            message="Could not identify the requested object in the transcript.",
+            details={"transcript": text},
         )
 
     destination = _extract_destination(normalized)
@@ -101,16 +84,6 @@ def parse_transcript_command(text: str) -> TaskCommand:
         source=source,
     )
 
-
-def supported_objects() -> list[str]:
-    return sorted(set(SUPPORTED_OBJECT_ALIASES.values()))
-
-
-def _extract_supported_object(text: str) -> str | None:
-    for candidate in sorted(SUPPORTED_OBJECT_ALIASES, key=len, reverse=True):
-        if re.search(rf"\b{re.escape(candidate)}\b", text):
-            return SUPPORTED_OBJECT_ALIASES[candidate]
-    return None
 
 
 def _extract_requested_object(text: str) -> str:

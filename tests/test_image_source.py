@@ -85,8 +85,47 @@ class ImageSourceTests(unittest.TestCase):
         self.assertIn("supported RGB image", raised.exception.message)
 
     def test_camera_capture_returns_dimensions_with_mocked_opencv(self) -> None:
+        frame = self._capture_fake_camera_frame(width=32, height=24)
+
+        self.assertEqual(frame.source_type, "camera")
+        self.assertEqual(frame.width, 32)
+        self.assertEqual(frame.height, 24)
+        self.assertEqual(frame.metadata["camera_index"], 2)
+        self.assertEqual(frame.metadata["backend"], "opencv")
+        self.assertEqual(frame.metadata["successful_reads"], 4)
+        self.assertFalse(frame.metadata["stereo_crop_applied"])
+        self.assertEqual(frame.image["code"], "BGR2RGB")
+        self.assertIsNotNone(frame.path)
+        self.assertTrue(Path(frame.path).exists())
+        self.assertNotIn("image", frame.to_public_dict())
+        Path(frame.path).unlink()
+
+    def test_camera_capture_crops_wide_stereo_frame_to_left_view(self) -> None:
+        frame = self._capture_fake_camera_frame(width=1344, height=376)
+
+        self.assertEqual(frame.width, 672)
+        self.assertEqual(frame.height, 376)
+        self.assertTrue(frame.metadata["stereo_crop_applied"])
+        self.assertEqual(frame.metadata["stereo_crop_view"], "left")
+        self.assertEqual(frame.metadata["original_width"], 1344)
+        self.assertEqual(frame.metadata["original_height"], 376)
+        self.assertEqual(frame.image["frame"].shape, (376, 672, 3))
+        Path(frame.path).unlink()
+
+    def _capture_fake_camera_frame(self, *, width: int, height: int):
         class FakeFrame:
-            shape = (24, 32, 3)
+            def __init__(self, width: int, height: int) -> None:
+                self.width = width
+                self.height = height
+                self.shape = (height, width, 3)
+
+            def __getitem__(self, key):
+                rows, columns = key
+                if not isinstance(columns, slice):
+                    raise AssertionError("expected column slice")
+                stop = self.width if columns.stop is None else columns.stop
+                start = 0 if columns.start is None else columns.start
+                return FakeFrame(stop - start, self.height)
 
         class FakeCapture:
             def __init__(self, camera_index: int) -> None:
@@ -99,7 +138,7 @@ class ImageSourceTests(unittest.TestCase):
 
             def read(self):
                 self.read_count += 1
-                return True, FakeFrame()
+                return True, FakeFrame(width, height)
 
             def set(self, property_id, value) -> bool:
                 return True
@@ -108,7 +147,7 @@ class ImageSourceTests(unittest.TestCase):
                 self.released = True
 
         def fake_imwrite(path: str, frame: FakeFrame) -> bool:
-            Path(path).write_bytes(b"fake jpeg")
+            Path(path).write_bytes(f"fake jpeg {frame.width}x{frame.height}".encode())
             return True
 
         fake_cv2 = types.SimpleNamespace(
@@ -120,19 +159,7 @@ class ImageSourceTests(unittest.TestCase):
         )
 
         with patch.dict(sys.modules, {"cv2": fake_cv2}):
-            frame = get_image_frame(image_file=None, camera_index=2)
-
-        self.assertEqual(frame.source_type, "camera")
-        self.assertEqual(frame.width, 32)
-        self.assertEqual(frame.height, 24)
-        self.assertEqual(frame.metadata["camera_index"], 2)
-        self.assertEqual(frame.metadata["backend"], "opencv")
-        self.assertEqual(frame.metadata["successful_reads"], 4)
-        self.assertEqual(frame.image["code"], "BGR2RGB")
-        self.assertIsNotNone(frame.path)
-        self.assertTrue(Path(frame.path).exists())
-        self.assertNotIn("image", frame.to_public_dict())
-        Path(frame.path).unlink()
+            return get_image_frame(image_file=None, camera_index=2)
 
     def test_camera_without_opencv_errors_cleanly(self) -> None:
         with patch.dict(sys.modules, {"cv2": None}):

@@ -73,13 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--qwen-model",
         help=(
             "Hugging Face model id for --vlm-backend qwen. "
-            "Defaults to CO_BOT_VLM_QWEN_MODEL_ID or Qwen/Qwen2.5-VL-3B-Instruct."
+            "Defaults to CO_BOT_VLM_QWEN_MODEL_ID or Qwen/Qwen2.5-VL-7B-Instruct."
         ),
     )
     parser.add_argument(
         "--pretty",
         action="store_true",
         help="Pretty-print the JSON envelope.",
+    )
+    parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="Print only VISIBLE/NOT VISIBLE status instead of JSON.",
     )
     return parser
 
@@ -109,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                 voice_duration_seconds=args.voice_duration,
                 whisper_model=args.whisper_model,
             ):
-                print(json.dumps(envelope, indent=indent, sort_keys=True), flush=True)
+                print(_format_plain(envelope) if args.plain else json.dumps(envelope, indent=indent, sort_keys=True), flush=True)
                 if args.stop_on_approved and envelope["safety"]["approved"]:
                     return 0
             return 0
@@ -129,8 +134,20 @@ def main(argv: list[str] | None = None) -> int:
         envelope = error_envelope(error)
         status = 2
 
-    print(json.dumps(envelope, indent=indent, sort_keys=True))
+    print(_format_plain(envelope) if args.plain else json.dumps(envelope, indent=indent, sort_keys=True))
     return status
+
+
+def _format_plain(envelope: dict) -> str:
+    error = envelope.get("next", {}).get("error")
+    if error:
+        return f"ERROR: {error.get('code')}: {error.get('message')}"
+
+    intent = envelope.get("intent", {})
+    target = intent.get("object") or "requested object"
+    verification = envelope.get("visual_verification", {})
+    visible = bool(verification.get("approved"))
+    return f"VISIBLE: {target}" if visible else f"NOT VISIBLE: {target}"
 
 
 if __name__ == "__main__":

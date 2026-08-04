@@ -45,14 +45,10 @@ def check_visual_grounding(
     *,
     min_confidence: float = MIN_VISUAL_CONFIDENCE,
 ) -> VisualVerification:
-    """Validate object existence evidence without robot pose assumptions."""
+    """Validate presence-only visual evidence."""
 
     if not grounding.visible:
         return VisualVerification(False, "object not visually verified", grounding)
-    if grounding.confidence < min_confidence:
-        return VisualVerification(False, "visual confidence below threshold", grounding)
-    if not _bbox_sane(grounding.bbox_xyxy, grounding.image_size):
-        return VisualVerification(False, "visual bounding box is invalid", grounding)
     return VisualVerification(True, "object visually verified", grounding)
 
 
