@@ -80,7 +80,11 @@ def parse_args() -> argparse.Namespace:
         default=local_qwen.DEFAULT_QWEN_MODEL,
         help="Local cached Qwen-VL model id or path. No download is attempted by default.",
     )
-    parser.add_argument("--qwen-max-new-tokens", default=2048, type=int)
+    parser.add_argument(
+        "--qwen-max-new-tokens",
+        default=local_qwen.DEFAULT_MAX_NEW_TOKENS,
+        type=int,
+    )
     parser.add_argument(
         "--allow-qwen-downloads",
         action="store_true",
