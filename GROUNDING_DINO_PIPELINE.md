@@ -23,10 +23,8 @@ Grounding DINO uses the official
 Transformers checkpoint. Run the cache command while network access is allowed:
 
 ```bash
-cd /home/team/VLA_Model_Work/SAM_3_implementation
-env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
-  .venv/bin/python scripts/cache_grounding_dino.py \
-  --model IDEA-Research/grounding-dino-base
+cd /home/team/VLA_Model_Work/SAM3_Projects/SAM3_With_GroundingDINO
+./sam3 cache-dino
 ```
 
 The command downloads only JSON/tokenizer/processor files and safetensors,
@@ -38,27 +36,41 @@ startup with an explicit cache error.
 
 ## Start and inspect the service
 
-The Compose command warms SAM, Grounding DINO Base, and Qwen 7B:
+The project launcher reuses the virtual environment, SAM source, and SAM
+checkpoint from `SAM3_Without_GroundingDINO`, starts the service in the
+background, and waits until SAM, Grounding DINO, Qwen, and the ZED camera are
+ready:
 
 ```bash
-docker compose -f docker-compose.mask-service.yml up --build mask_service
+cd /home/team/VLA_Model_Work/SAM3_Projects/SAM3_With_GroundingDINO
+./sam3 start
 ```
 
-For a direct launch:
+Only one SAM service can own the ZED camera and port 8765. If the no-DINO SAM
+service is running, `./sam3 start` recognizes it and stops it cleanly before
+starting DINO. An unknown service occupying the port is never killed. If
+another terminal or development session restarts the no-DINO Docker container
+during DINO warmup, the launcher stops DINO and reports the conflict instead of
+allowing two GPU/camera processes to compete.
+
+Submit a bounded segmentation request with no agent fallback:
 
 ```bash
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-  .venv/bin/python -u scripts/mask_service.py \
-  --host 127.0.0.1 --port 8765 \
-  --pipeline-mode dino --warm-dino --warm-qwen
+./sam3 "small orange box"
 ```
 
-DINO mode requires the calibrated HD720 crop `448,360,384,360`; a different
-resolution, crop, or `--no-crop` is rejected. Check readiness with:
+Check readiness, follow logs, and release the camera with:
 
 ```bash
-curl -s http://127.0.0.1:8765/health | python3 -m json.tool
+./sam3 status
+./sam3 logs
+./sam3 stop
 ```
+
+Set `SAM3_RUNTIME_PROJECT` only if the shared no-DINO project moves from
+`/home/team/VLA_Model_Work/SAM3_Projects/SAM3_Without_GroundingDINO`.
+DINO mode always uses the calibrated HD720 crop `448,360,384,360` and offline
+model caches. A different resolution, crop, or `--no-crop` is rejected.
 
 `grounding_dino` reports `loaded`, model ID, model class, BF16 dtype, CUDA
 devices, evaluation mode, local-only status, thresholds, proposal cap, padding,
