@@ -18,11 +18,21 @@ services:
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_DISABLE_TELEMETRY=1
-      - SAM3_AGENT_QWEN_MODEL_ID=Qwen/Qwen2.5-VL-7B-Instruct
+      - SAM3_AGENT_QWEN_MODEL_ID=${SAM3_AGENT_QWEN_MODEL_ID:-Qwen/Qwen2.5-VL-7B-Instruct}
       - SAM3_AGENT_QWEN_LOCAL_ONLY=1
       - SAM3_AGENT_QWEN_DEVICE_MAP=auto
       - SAM3_AGENT_QWEN_MAX_NEW_TOKENS=512
       - SAM3_AGENT_QWEN_REPETITION_PENALTY=1.15
+      - SAM3_INTENT_PARSER_MODE=${SAM3_INTENT_PARSER_MODE:-shadow}
+      - SAM3_V2_ENABLED=${SAM3_V2_ENABLED:-0}
+      - SAM3_V2_EVALUATION_MODE=${SAM3_V2_EVALUATION_MODE:-0}
+      - SAM3_SAM_BACKEND=${SAM3_SAM_BACKEND:-multiplex}
+      - SAM3_IMAGE_PARITY_REPORT=${SAM3_IMAGE_PARITY_REPORT:-}
+      - SAM3_V2_RELATION_THRESHOLD_REPORT=${SAM3_V2_RELATION_THRESHOLD_REPORT:-}
+      - SAM3_V2_RELEASE_REPORT=${SAM3_V2_RELEASE_REPORT:-}
+      - SAM3_V2_INTERPRET_MAX_NEW_TOKENS=1024
+      - SAM3_V2_VISUAL_MAX_NEW_TOKENS=512
+      - SAM3_V2_FULL_CONTEXT=1
       - SAM3_QWEN_VERIFIER_MAX_NEW_TOKENS=256
       - SAM3_QWEN_VERIFIER_MIN_CONFIDENCE=0.70
       - SAM3_QWEN_VERIFIER_MAX_AREA_FRACTION=0.25
@@ -50,9 +60,9 @@ services:
         - .venv/bin/python
         - -c
         - >-
-          import json, urllib.request;
+          import json, os, urllib.request;
           data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5));
-          assert data.get('qwen_loaded') and data.get('qwen_model') == 'Qwen/Qwen2.5-VL-7B-Instruct'
+          assert data.get('qwen_loaded') and data.get('qwen_model') == os.environ['SAM3_AGENT_QWEN_MODEL_ID']
       interval: 15s
       timeout: 10s
       retries: 20
