@@ -16,10 +16,10 @@ from typing import Any
 
 DEFAULT_QWEN_MODEL = os.environ.get(
     "SAM3_AGENT_QWEN_MODEL_ID",
-    os.environ.get("CO_BOT_VLM_QWEN_MODEL_ID", "Qwen/Qwen2.5-VL-3B-Instruct"),
+    os.environ.get("CO_BOT_VLM_QWEN_MODEL_ID", "Qwen/Qwen2.5-VL-7B-Instruct"),
 )
 DEFAULT_DEVICE_MAP = os.environ.get("SAM3_AGENT_QWEN_DEVICE_MAP", "auto")
-DEFAULT_MAX_NEW_TOKENS = int(os.environ.get("SAM3_AGENT_QWEN_MAX_NEW_TOKENS", "2048"))
+DEFAULT_MAX_NEW_TOKENS = int(os.environ.get("SAM3_AGENT_QWEN_MAX_NEW_TOKENS", "512"))
 
 
 def _repetition_penalty_default() -> float | None:
@@ -107,7 +107,33 @@ def _load_qwen(model_id: str, local_files_only: bool, device_map: str):
         model_id,
         local_files_only=local_files_only,
     )
+    model.eval()
     return model, processor
+
+
+def preload_qwen(
+    model_id: str = DEFAULT_QWEN_MODEL,
+    *,
+    local_files_only: bool | None = None,
+    device_map: str = DEFAULT_DEVICE_MAP,
+) -> dict[str, Any]:
+    """Load the configured model once and return compact runtime metadata."""
+
+    local_only = _local_only_default() if local_files_only is None else local_files_only
+    model, _processor = _load_qwen(model_id, local_only, device_map)
+    hf_device_map = getattr(model, "hf_device_map", {})
+    devices = sorted({str(value) for value in hf_device_map.values()})
+    if not devices and hasattr(model, "device"):
+        devices = [str(model.device)]
+    first_parameter = next(model.parameters(), None)
+    dtype = None if first_parameter is None else str(first_parameter.dtype)
+    return {
+        "model_id": model_id,
+        "model_class": type(model).__name__,
+        "dtype": dtype,
+        "devices": devices,
+        "local_files_only": bool(local_only),
+    }
 
 
 def qwen_generate(
@@ -119,6 +145,8 @@ def qwen_generate(
     local_files_only: bool | None = None,
     device_map: str = DEFAULT_DEVICE_MAP,
     repetition_penalty: float | None = None,
+    do_sample: bool | None = None,
+    response_prefix: str | None = None,
 ) -> str:
     """Generate text from local cached Qwen-VL for Meta's SAM3 agent messages."""
 
@@ -146,6 +174,8 @@ def qwen_generate(
             tokenize=False,
             add_generation_prompt=True,
         )
+        if response_prefix:
+            prompt += response_prefix
         image_inputs, video_inputs = process_vision_info(qwen_messages)
         inputs = processor(
             text=[prompt],
@@ -163,6 +193,8 @@ def qwen_generate(
     )
     if penalty is not None:
         gen_kwargs["repetition_penalty"] = penalty
+    if do_sample is not None:
+        gen_kwargs["do_sample"] = do_sample
     generated_ids = model.generate(**inputs, **gen_kwargs)
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
@@ -174,7 +206,7 @@ def qwen_generate(
     )
     if not output_text:
         raise RuntimeError("Qwen-VL returned no text.")
-    return output_text[0]
+    return (response_prefix or "") + output_text[0]
 
 
 class _StdoutToStderr:
