@@ -8,6 +8,7 @@ It does not download model weights.
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -121,6 +122,7 @@ def preload_qwen(
 
     local_only = _local_only_default() if local_files_only is None else local_files_only
     model, _processor = _load_qwen(model_id, local_only, device_map)
+    constraint_data = _lmfe_tokenizer_data(model_id, local_only, device_map)
     hf_device_map = getattr(model, "hf_device_map", {})
     devices = sorted({str(value) for value in hf_device_map.values()})
     if not devices and hasattr(model, "device"):
@@ -133,7 +135,53 @@ def preload_qwen(
         "dtype": dtype,
         "devices": devices,
         "local_files_only": bool(local_only),
+        "json_schema_constraint_ready": True,
+        "constraint_vocab_size": int(constraint_data.vocab_size),
     }
+
+
+@lru_cache(maxsize=2)
+def _lmfe_tokenizer_data(model_id: str, local_files_only: bool, device_map: str):
+    """Build reusable LM Format Enforcer tokenizer data for Transformers 5.x."""
+
+    try:
+        from lmformatenforcer.integrations.transformers import (
+            build_token_enforcer_tokenizer_data,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "Schema-constrained Qwen generation requires lm-format-enforcer. "
+            "Install it with `.venv/bin/python -m pip install -r "
+            "requirements.mask-service.txt`."
+        ) from exc
+
+    _model, processor = _load_qwen(model_id, local_files_only, device_map)
+    return build_token_enforcer_tokenizer_data(processor.tokenizer)
+
+
+def _json_schema_prefix_allowed_tokens_fn(
+    schema: dict[str, Any],
+    *,
+    model_id: str,
+    local_files_only: bool,
+    device_map: str,
+):
+    """Build one request-scoped JSON grammar over cached tokenizer metadata."""
+
+    try:
+        from lmformatenforcer import JsonSchemaParser
+        from lmformatenforcer.integrations.transformers import (
+            build_transformers_prefix_allowed_tokens_fn,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "Schema-constrained Qwen generation requires lm-format-enforcer. "
+            "Install it with `.venv/bin/python -m pip install -r "
+            "requirements.mask-service.txt`."
+        ) from exc
+    tokenizer_data = _lmfe_tokenizer_data(model_id, local_files_only, device_map)
+    parser = JsonSchemaParser(copy.deepcopy(schema))
+    return build_transformers_prefix_allowed_tokens_fn(tokenizer_data, parser)
 
 
 def qwen_generate(
@@ -147,10 +195,13 @@ def qwen_generate(
     repetition_penalty: float | None = None,
     do_sample: bool | None = None,
     response_prefix: str | None = None,
+    json_schema: dict[str, Any] | None = None,
 ) -> str:
     """Generate text from local cached Qwen-VL for Meta's SAM3 agent messages."""
 
     local_only = _local_only_default() if local_files_only is None else local_files_only
+    if response_prefix and json_schema is not None:
+        raise ValueError("response_prefix and json_schema cannot be combined")
 
     try:
         from qwen_vl_utils import process_vision_info
@@ -195,6 +246,13 @@ def qwen_generate(
         gen_kwargs["repetition_penalty"] = penalty
     if do_sample is not None:
         gen_kwargs["do_sample"] = do_sample
+    if json_schema is not None:
+        gen_kwargs["prefix_allowed_tokens_fn"] = _json_schema_prefix_allowed_tokens_fn(
+            json_schema,
+            model_id=model_id,
+            local_files_only=local_only,
+            device_map=device_map,
+        )
     generated_ids = model.generate(**inputs, **gen_kwargs)
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)

@@ -20,6 +20,10 @@ MAX_ANCHORS = 3
 MAX_RELATIONSHIPS = 4
 MAX_PROMPTS_PER_ENTITY = 4
 MAX_BOXES_PER_ENTITY = 4
+MAX_NOUN_MODIFIERS = 4
+MAX_ATTRIBUTES_PER_ENTITY = 8
+MAX_QWEN_EVIDENCE_CHARS = 256
+QWEN_SEMANTIC_CONTRACT_VERSION = 1
 
 BASE_ENVELOPE_KEYS = {
     "schema_version",
@@ -45,6 +49,22 @@ ENTITY_KEYS = {
 ATTRIBUTE_KEYS = {"type", "value", "evidence"}
 SELECTOR_KEYS = {"type", "evidence"}
 RELATIONSHIP_KEYS = {"type", "target_id", "anchor_id", "evidence"}
+QWEN_SEMANTIC_KEYS = {
+    "action",
+    "destination",
+    "target",
+    "anchors",
+    "relationships",
+}
+QWEN_ENTITY_KEYS = {
+    "mention",
+    "head_noun",
+    "noun_modifiers",
+    "attributes",
+    "selector",
+}
+QWEN_ATTRIBUTE_KEYS = {"type", "evidence"}
+QWEN_RELATIONSHIP_KEYS = {"type", "anchor_index", "evidence"}
 
 VALID_ACTIONS = {"identify", "pick", "move", "place"}
 ACTION_EVIDENCE_ALIASES = {
@@ -155,6 +175,142 @@ class GroundingV2Error(ValueError):
         self.retryable_format = retryable_format
 
 
+def qwen_semantic_json_schema() -> dict[str, Any]:
+    """Return the bounded schema enforced during Qwen interpretation decoding."""
+
+    nullable_string = {
+        "anyOf": [
+            {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_QWEN_EVIDENCE_CHARS,
+            },
+            {"type": "null"},
+        ]
+    }
+    selector = {
+        "anyOf": [
+            {"type": "null"},
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "evidence"],
+                "properties": {
+                    "type": {"type": "string", "enum": sorted(VALID_SELECTORS)},
+                    "evidence": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_QWEN_EVIDENCE_CHARS,
+                    },
+                },
+            },
+        ]
+    }
+    attribute = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["type", "evidence"],
+        "properties": {
+            "type": {"type": "string", "enum": sorted(ATTRIBUTE_TYPES)},
+            "evidence": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_QWEN_EVIDENCE_CHARS,
+            },
+        },
+    }
+
+    def entity_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "mention",
+                "head_noun",
+                "noun_modifiers",
+                "attributes",
+                "selector",
+            ],
+            "properties": {
+                "mention": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_QWEN_EVIDENCE_CHARS,
+                },
+                "head_noun": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_QWEN_EVIDENCE_CHARS,
+                },
+                "noun_modifiers": {
+                    "type": "array",
+                    "maxItems": MAX_NOUN_MODIFIERS,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_QWEN_EVIDENCE_CHARS,
+                    },
+                },
+                "attributes": {
+                    "type": "array",
+                    "maxItems": MAX_ATTRIBUTES_PER_ENTITY,
+                    "items": attribute,
+                },
+                "selector": selector,
+            },
+        }
+
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["action", "destination", "target", "anchors", "relationships"],
+        "properties": {
+            "action": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["type", "evidence"],
+                "properties": {
+                    "type": {"type": "string", "enum": sorted(VALID_ACTIONS)},
+                    "evidence": nullable_string,
+                },
+            },
+            "destination": nullable_string,
+            "target": entity_schema(),
+            "anchors": {
+                "type": "array",
+                "maxItems": MAX_ANCHORS,
+                "items": entity_schema(),
+            },
+            "relationships": {
+                "type": "array",
+                "maxItems": MAX_RELATIONSHIPS,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["type", "anchor_index", "evidence"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": sorted(VALID_RELATIONSHIPS),
+                        },
+                        "anchor_index": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": MAX_ANCHORS - 1,
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_QWEN_EVIDENCE_CHARS,
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
 def collapse_space(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip())
 
@@ -163,6 +319,62 @@ def normalize_text(value: str) -> str:
     value = value.lower().replace("_", " ").replace("-", " ")
     value = re.sub(r"[^a-z0-9 ]+", " ", value)
     return collapse_space(value)
+
+
+def _normalized_terms(value: str) -> set[str]:
+    """Return normalized whole-word terms for cross-role evidence checks."""
+
+    return set(normalize_text(value).split())
+
+
+def _validate_entity_role_partition(
+    *,
+    entity_id: str,
+    head_noun: str,
+    noun_modifiers: list[str],
+    attribute_evidence: list[str],
+    selector_evidence: str | None,
+) -> None:
+    """Refuse semantic evidence duplicated across mutually exclusive roles."""
+
+    lexical_roles = [("head_noun", head_noun)]
+    lexical_roles.extend(
+        ("noun_modifier", modifier) for modifier in noun_modifiers
+    )
+    for evidence in attribute_evidence:
+        evidence_terms = _normalized_terms(evidence)
+        for role, lexical_value in lexical_roles:
+            if evidence_terms & _normalized_terms(lexical_value):
+                raise GroundingV2Error(
+                    "attribute evidence must not overlap a noun modifier or the head noun",
+                    code="invalid_attribute_partition",
+                    details={
+                        "entity_id": entity_id,
+                        "attribute_evidence": evidence,
+                        "conflicting_role": role,
+                        "conflicting_evidence": lexical_value,
+                    },
+                )
+
+    if selector_evidence is None:
+        return
+    selector_terms = _normalized_terms(selector_evidence)
+    selector_conflicts = list(lexical_roles)
+    selector_conflicts.extend(
+        ("attribute", evidence) for evidence in attribute_evidence
+    )
+    for role, conflicting_evidence in selector_conflicts:
+        if selector_terms & _normalized_terms(conflicting_evidence):
+            raise GroundingV2Error(
+                "selector evidence must not overlap an attribute, noun modifier, or the head noun",
+                code="invalid_attribute_partition",
+                details={
+                    "entity_id": entity_id,
+                    "selector_evidence": selector_evidence,
+                    "conflicting_role": role,
+                    "conflicting_evidence": conflicting_evidence,
+                },
+            )
 
 
 def normalize_relationship(value: str) -> str:
@@ -327,6 +539,16 @@ def _validate_entity(
     raw_modifiers = value["noun_modifiers"]
     if not isinstance(raw_modifiers, list):
         raise _schema_error(f"{entity_id}.noun_modifiers must be a list")
+    if len(raw_modifiers) > MAX_NOUN_MODIFIERS:
+        raise GroundingV2Error(
+            f"at most {MAX_NOUN_MODIFIERS} noun modifiers are allowed per entity",
+            code="request_complexity_limit",
+            details={
+                "entity_id": entity_id,
+                "noun_modifiers": len(raw_modifiers),
+                "limit": MAX_NOUN_MODIFIERS,
+            },
+        )
     modifiers: list[str] = []
     seen_modifiers: set[str] = set()
     for index, raw_modifier in enumerate(raw_modifiers):
@@ -348,6 +570,16 @@ def _validate_entity(
     raw_attributes = value["attributes"]
     if not isinstance(raw_attributes, list):
         raise _schema_error(f"{entity_id}.attributes must be a list")
+    if len(raw_attributes) > MAX_ATTRIBUTES_PER_ENTITY:
+        raise GroundingV2Error(
+            f"at most {MAX_ATTRIBUTES_PER_ENTITY} attributes are allowed per entity",
+            code="request_complexity_limit",
+            details={
+                "entity_id": entity_id,
+                "attributes": len(raw_attributes),
+                "limit": MAX_ATTRIBUTES_PER_ENTITY,
+            },
+        )
     attributes: list[dict[str, str]] = []
     seen_attributes: set[tuple[str, str]] = set()
     for index, raw_attribute in enumerate(raw_attributes):
@@ -395,6 +627,13 @@ def _validate_entity(
         )
 
     selector = _validate_selector(value["selector"], mention, entity_id)
+    _validate_entity_role_partition(
+        entity_id=entity_id,
+        head_noun=head_noun,
+        noun_modifiers=modifiers,
+        attribute_evidence=[attribute["evidence"] for attribute in attributes],
+        selector_evidence=None if selector is None else selector["evidence"],
+    )
     return (
         {
             "id": entity_id,
@@ -656,6 +895,176 @@ def seal_command_envelope(
     return canonical
 
 
+def _qwen_entity_to_envelope_entity(
+    value: Any,
+    *,
+    entity_id: str,
+) -> dict[str, Any]:
+    value = _require_exact_keys(value, QWEN_ENTITY_KEYS, entity_id)
+    raw_attributes = value["attributes"]
+    if not isinstance(raw_attributes, list):
+        raise _schema_error(f"{entity_id}.attributes must be a list")
+    if len(raw_attributes) > MAX_ATTRIBUTES_PER_ENTITY:
+        raise GroundingV2Error(
+            f"at most {MAX_ATTRIBUTES_PER_ENTITY} attributes are allowed per entity",
+            code="request_complexity_limit",
+            details={
+                "entity_id": entity_id,
+                "attributes": len(raw_attributes),
+                "limit": MAX_ATTRIBUTES_PER_ENTITY,
+            },
+        )
+    attributes: list[dict[str, str]] = []
+    for index, raw_attribute in enumerate(raw_attributes):
+        attribute = _require_exact_keys(
+            raw_attribute,
+            QWEN_ATTRIBUTE_KEYS,
+            f"{entity_id}.attributes[{index}]",
+        )
+        evidence = _nonempty_string(
+            attribute["evidence"],
+            f"{entity_id}.attributes[{index}].evidence",
+        )
+        attributes.append(
+            {
+                "type": attribute["type"],
+                "value": evidence,
+                "evidence": evidence,
+            }
+        )
+
+    raw_modifiers = value["noun_modifiers"]
+    if not isinstance(raw_modifiers, list):
+        raise _schema_error(f"{entity_id}.noun_modifiers must be a list")
+    if len(raw_modifiers) > MAX_NOUN_MODIFIERS:
+        raise GroundingV2Error(
+            f"at most {MAX_NOUN_MODIFIERS} noun modifiers are allowed per entity",
+            code="request_complexity_limit",
+            details={
+                "entity_id": entity_id,
+                "noun_modifiers": len(raw_modifiers),
+                "limit": MAX_NOUN_MODIFIERS,
+            },
+        )
+    selector = value["selector"]
+    _validate_entity_role_partition(
+        entity_id=entity_id,
+        head_noun=value["head_noun"] if isinstance(value["head_noun"], str) else "",
+        noun_modifiers=[item for item in raw_modifiers if isinstance(item, str)],
+        attribute_evidence=[attribute["evidence"] for attribute in attributes],
+        selector_evidence=(
+            selector.get("evidence")
+            if isinstance(selector, dict) and isinstance(selector.get("evidence"), str)
+            else None
+        ),
+    )
+
+    return {
+        "id": entity_id,
+        "mention": value["mention"],
+        "head_noun": value["head_noun"],
+        "noun_modifiers": raw_modifiers,
+        "attributes": attributes,
+        "selector": selector,
+    }
+
+
+def envelope_from_qwen_semantics(value: Any, raw_command: str) -> dict[str, Any]:
+    """Add only deterministic structure to Qwen's semantic interpretation."""
+
+    raw_command = _nonempty_string(raw_command, "raw_command")
+    value = _require_exact_keys(value, QWEN_SEMANTIC_KEYS, "Qwen semantics")
+    action = _require_exact_keys(value["action"], ACTION_KEYS, "action")
+
+    raw_anchors = value["anchors"]
+    if not isinstance(raw_anchors, list):
+        raise _schema_error("anchors must be a list")
+    if len(raw_anchors) > MAX_ANCHORS:
+        raise GroundingV2Error(
+            f"at most {MAX_ANCHORS} anchors are allowed",
+            code="request_complexity_limit",
+            details={"anchors": len(raw_anchors), "limit": MAX_ANCHORS},
+        )
+    target = _qwen_entity_to_envelope_entity(value["target"], entity_id="target")
+    anchors = [
+        _qwen_entity_to_envelope_entity(anchor, entity_id=f"anchor_{index}")
+        for index, anchor in enumerate(raw_anchors, start=1)
+    ]
+
+    raw_relationships = value["relationships"]
+    if not isinstance(raw_relationships, list):
+        raise _schema_error("relationships must be a list")
+    if len(raw_relationships) > MAX_RELATIONSHIPS:
+        raise GroundingV2Error(
+            f"at most {MAX_RELATIONSHIPS} relationships are allowed",
+            code="request_complexity_limit",
+            details={
+                "relationships": len(raw_relationships),
+                "limit": MAX_RELATIONSHIPS,
+            },
+        )
+    relationships: list[dict[str, Any]] = []
+    for index, raw_relationship in enumerate(raw_relationships):
+        relationship = _require_exact_keys(
+            raw_relationship,
+            QWEN_RELATIONSHIP_KEYS,
+            f"relationships[{index}]",
+        )
+        anchor_index = relationship["anchor_index"]
+        if (
+            isinstance(anchor_index, bool)
+            or not isinstance(anchor_index, int)
+            or not 0 <= anchor_index < len(anchors)
+        ):
+            raise GroundingV2Error(
+                "relationship anchor_index does not reference an emitted anchor",
+                code="invalid_entity_reference",
+                details={
+                    "relationship_index": index,
+                    "anchor_index": anchor_index,
+                    "anchor_count": len(anchors),
+                },
+            )
+        relationships.append(
+            {
+                "type": relationship["type"],
+                "target_id": "target",
+                "anchor_id": f"anchor_{anchor_index + 1}",
+                "evidence": relationship["evidence"],
+            }
+        )
+
+    visual_spans = [
+        resolve_unique_evidence(
+            raw_command,
+            entity["mention"],
+            field=f"{entity['id']}.mention",
+        )
+        for entity in [target, *anchors]
+    ]
+    visual_spans.extend(
+        resolve_unique_evidence(
+            raw_command,
+            relationship["evidence"],
+            field=f"relationships[{index}].evidence",
+        )
+        for index, relationship in enumerate(relationships)
+    )
+    visual_start = min(start for start, _end in visual_spans)
+    visual_end = max(end for _start, end in visual_spans)
+    envelope = {
+        "schema_version": SCHEMA_VERSION,
+        "raw_command": raw_command,
+        "visual_source_phrase": raw_command[visual_start:visual_end],
+        "action": action,
+        "destination": value["destination"],
+        "target": target,
+        "anchors": anchors,
+        "relationships": relationships,
+    }
+    return seal_command_envelope(envelope, expected_raw_command=raw_command)
+
+
 def build_entity_prompts(entity: dict[str, Any], *, max_prompts: int = 4) -> list[str]:
     """Build the bounded open-vocabulary prompt family specified by v2."""
 
@@ -695,25 +1104,145 @@ def entity_prompt_map(envelope: dict[str, Any]) -> dict[str, list[str]]:
     return {entity["id"]: build_entity_prompts(entity) for entity in entities}
 
 
-def qwen_interpretation_messages(raw_command: str) -> list[dict[str, str]]:
-    """Return the complete deterministic-generation prompt for Qwen."""
+def qwen_interpretation_messages(
+    raw_command: str,
+    *,
+    correction: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Return the semantic-only, schema-constrained interpretation prompt."""
 
     raw_command = _nonempty_string(raw_command, "raw_command")
+    examples = [
+        (
+            "identify the small orange box inside the blue bin",
+            {
+                "action": {"type": "identify", "evidence": "identify"},
+                "destination": None,
+                "target": {
+                    "mention": "small orange box",
+                    "head_noun": "box",
+                    "noun_modifiers": [],
+                    "attributes": [
+                        {"type": "size", "evidence": "small"},
+                        {"type": "color", "evidence": "orange"},
+                    ],
+                    "selector": None,
+                },
+                "anchors": [
+                    {
+                        "mention": "blue bin",
+                        "head_noun": "bin",
+                        "noun_modifiers": [],
+                        "attributes": [{"type": "color", "evidence": "blue"}],
+                        "selector": None,
+                    }
+                ],
+                "relationships": [
+                    {"type": "inside", "anchor_index": 0, "evidence": "inside"}
+                ],
+            },
+        ),
+        (
+            "find the striped air filter box",
+            {
+                "action": {"type": "identify", "evidence": "find"},
+                "destination": None,
+                "target": {
+                    "mention": "striped air filter box",
+                    "head_noun": "box",
+                    "noun_modifiers": ["air filter"],
+                    "attributes": [{"type": "pattern", "evidence": "striped"}],
+                    "selector": None,
+                },
+                "anchors": [],
+                "relationships": [],
+            },
+        ),
+        (
+            "grab the rightmost metal bolt and put it in the drop zone",
+            {
+                "action": {"type": "pick", "evidence": "grab"},
+                "destination": "drop zone",
+                "target": {
+                    "mention": "rightmost metal bolt",
+                    "head_noun": "bolt",
+                    "noun_modifiers": [],
+                    "attributes": [{"type": "material", "evidence": "metal"}],
+                    "selector": {"type": "rightmost", "evidence": "rightmost"},
+                },
+                "anchors": [],
+                "relationships": [],
+            },
+        ),
+    ]
+    example_text = "\n\n".join(
+        "EXAMPLE INPUT:\n"
+        + command
+        + "\nEXAMPLE OUTPUT:\n"
+        + json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+        for command, output in examples
+    )
     system = f"""You are the sole language interpreter for a perception-only robot vision system.
-Return exactly one JSON object and no markdown. Never infer robot motion execution.
+Return exactly one JSON object matching the enforced schema and no commentary. Interpret the raw command only; never infer robot motion execution.
 
-Required top-level keys (exactly): schema_version, raw_command, visual_source_phrase, action, destination, target, anchors, relationships.
-schema_version is {SCHEMA_VERSION}. Copy raw_command byte-for-byte.
-action is {{"type": one of [identify,pick,move,place], "evidence": exact verb text or null}}. Use identify with null evidence when no action verb is present. destination is an exact command substring or null; it is never a visual relationship anchor merely because it follows an action.
-target and each anchor have exactly: id, mention, head_noun, noun_modifiers, attributes, selector. target.id is "target". Anchor ids are consecutive "anchor_1" through "anchor_{MAX_ANCHORS}". mention is the shortest complete identifying noun phrase copied as a unique exact substring of raw_command; omit a leading determiner such as a/an/the. head_noun and every noun modifier are exact substrings of mention. attributes is a list of {{"type": one of [color,size,shape,material,marking,pattern,text,state], "value": copied evidence, "evidence": exact substring of mention}}. selector is null or {{"type": one of [rightmost,leftmost,topmost,bottommost,nearest,farthest,largest,smallest], "evidence": exact substring of mention}}. A selector belongs only to the entity whose mention contains its evidence.
-relationships contain exactly: type, target_id, anchor_id, evidence. target_id is "target". Types are inside, on, left_of, right_of, above, below, near, next_to, in_front_of, behind. Normalize in/inside/within to inside, beside to next_to, and on top of to on. evidence is only the unique exact relationship operator text. The word "from" is a source marker and NEVER proves inside. It may introduce a contextual anchor with no relationship. Do not create a relationship without explicit operator evidence.
-visual_source_phrase is computed from visual evidence: copy the exact raw-command slice beginning at the earliest target/anchor mention or relationship evidence and ending at the latest. Exclude action/destination text outside that slice.
-Limits: one target, at most {MAX_ANCHORS} anchors, at most {MAX_RELATIONSHIPS} relationships. Reject pronouns or conversational references by returning a concrete schema-valid interpretation only when the command itself supplies the noun; otherwise use the unresolved word as head_noun so validation will refuse it. Do not add facts absent from exact evidence."""
-    user = f"Interpret this raw command exactly:\n{raw_command}"
+Output exactly these five top-level fields: action, destination, target, anchors, relationships. Do not output schema_version, raw_command, visual_source_phrase, ids, hashes, or attribute values; deterministic code supplies them.
+Every action has exactly type and evidence. Type is identify, pick, move, or place. Evidence is the unique exact action phrase from the raw command, or null only for implicit identify.
+Destination is a unique exact raw-command substring or null. A destination is not an anchor merely because it follows an action.
+Target and every anchor have exactly mention, head_noun, noun_modifiers, attributes, selector. Always emit every field, using [] and null when absent.
+Mention is the shortest complete identifying noun phrase copied exactly from the raw command, without a leading a/an/the. Mention must contain its head_noun, every noun modifier, every attribute evidence string, and selector evidence.
+Use noun_modifiers only for lexical compound-noun taxonomy, such as "air filter" in "air filter box". Colors, sizes, shapes, materials, markings, patterns, text, and states belong only in attributes and must never be duplicated in noun_modifiers. Attributes have exactly type and evidence; evidence is copied exactly from mention.
+Selector is null or has exactly type and evidence. It belongs only to the entity whose mention contains the evidence.
+Each relationship has exactly type, anchor_index, evidence. anchor_index is the zero-based position in anchors. Type is one of inside, on, left_of, right_of, above, below, near, next_to, in_front_of, behind. Normalize aliases to that type but copy the unique exact operator phrase as evidence. "from" never proves inside and must not create a relationship.
+Emit one target, at most {MAX_ANCHORS} anchors, and at most {MAX_RELATIONSHIPS} relationships. Never invent evidence. Never copy instructions, examples, diagnostics, or delimiters into a field.
+
+{example_text}"""
+    user_parts = [
+        "RAW COMMAND AS A JSON STRING (the only source text):",
+        json.dumps(raw_command, ensure_ascii=False),
+    ]
+    if correction is not None:
+        user_parts.extend(
+            [
+                "PREVIOUS VALIDATION FAILURE (diagnostic only; do not copy it):",
+                json.dumps(correction, ensure_ascii=False, separators=(",", ":")),
+                "Regenerate the complete five-field semantic object and correct that failure.",
+            ]
+        )
     return [
         {"role": "system", "content": system},
-        {"role": "user", "content": user},
+        {"role": "user", "content": "\n".join(user_parts)},
     ]
+
+
+def qwen_interpretation_error_is_retryable(error: GroundingV2Error) -> bool:
+    """Retry Qwen placement/schema mistakes, but not unsafe input conditions."""
+
+    return error.code not in {
+        "ambiguous_source_evidence",
+        "request_complexity_limit",
+        "unsupported_reference",
+    }
+
+
+def parse_qwen_semantic_interpretation(text: str, raw_command: str) -> dict[str, Any]:
+    """Parse Qwen's reduced semantic object and deterministically seal it."""
+
+    if not isinstance(text, str) or not text.strip():
+        raise GroundingV2Error(
+            "Qwen returned an empty interpretation",
+            code="invalid_interpretation_json",
+            retryable_format=True,
+        )
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise GroundingV2Error(
+            f"Qwen returned invalid JSON: {exc.msg}",
+            code="invalid_interpretation_json",
+            details={"line": exc.lineno, "column": exc.colno},
+            retryable_format=True,
+        ) from exc
+    return envelope_from_qwen_semantics(value, raw_command)
 
 
 def parse_qwen_interpretation(text: str, raw_command: str) -> dict[str, Any]:

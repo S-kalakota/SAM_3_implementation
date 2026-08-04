@@ -413,18 +413,21 @@ def qwen_command_envelope(
     raw_command: str,
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Interpret every v2 command with Qwen and one format-only retry."""
+    """Interpret every v2 command with constrained Qwen and bounded repairs."""
 
     if not isinstance(raw_command, str) or not raw_command.strip():
         raise grounding_v2.GroundingV2Error("raw_command must be non-empty")
     started = time.monotonic()
-    messages: list[dict[str, Any]] = list(
-        grounding_v2.qwen_interpretation_messages(raw_command)
-    )
     attempts: list[dict[str, Any]] = []
-    for attempt_number in (1, 2):
+    correction: dict[str, Any] | None = None
+    schema = grounding_v2.qwen_semantic_json_schema()
+    for attempt_number in (1, 2, 3):
         raw: str | None = None
         try:
+            messages = grounding_v2.qwen_interpretation_messages(
+                raw_command,
+                correction=correction,
+            )
             raw = local_qwen.qwen_generate(
                 messages,
                 model_id=args.qwen_model,
@@ -432,9 +435,13 @@ def qwen_command_envelope(
                 local_files_only=not args.allow_qwen_downloads,
                 device_map=args.qwen_device_map,
                 do_sample=False,
-                response_prefix='{"schema_version":',
+                repetition_penalty=1.0,
+                json_schema=schema,
             )
-            envelope = grounding_v2.parse_qwen_interpretation(raw, raw_command)
+            envelope = grounding_v2.parse_qwen_semantic_interpretation(
+                raw,
+                raw_command,
+            )
             attempts.append(
                 {"attempt": attempt_number, "raw_response": raw, "error": None}
             )
@@ -442,6 +449,10 @@ def qwen_command_envelope(
                 "status": "accepted",
                 "model": args.qwen_model,
                 "deterministic_generation": True,
+                "schema_constrained_generation": True,
+                "semantic_contract_version": (
+                    grounding_v2.QWEN_SEMANTIC_CONTRACT_VERSION
+                ),
                 "attempts": attempts,
                 "elapsed_s": round(time.monotonic() - started, 3),
             }
@@ -457,25 +468,20 @@ def qwen_command_envelope(
                     },
                 }
             )
-            if not exc.retryable_format:
+            can_retry = grounding_v2.qwen_interpretation_error_is_retryable(exc)
+            if not can_retry or attempt_number == 3:
+                exc.details = {
+                    **exc.details,
+                    "attempt_count": len(attempts),
+                    "attempt_errors": [item["error"] for item in attempts],
+                }
                 raise
-            if attempt_number == 1:
-                messages.extend(
-                    [
-                        {"role": "assistant", "content": str(raw or "")[:4000]},
-                        {
-                            "role": "user",
-                            "content": (
-                                "FORMAT-ONLY RETRY: keep the same interpretation and "
-                                "source evidence. Return exactly the eight required keys "
-                                "as valid JSON, no markdown or commentary. The response "
-                                "is prefixed with {\"schema_version\":; continue with 2 "
-                                "and the remaining fields."
-                            ),
-                        },
-                    ]
-                )
-                continue
+            correction = {
+                "code": exc.code,
+                "message": str(exc),
+                "details": exc.details,
+            }
+            continue
         except Exception as exc:
             attempts.append(
                 {
@@ -491,11 +497,7 @@ def qwen_command_envelope(
                 code="grounding_parser_unavailable",
                 details={"attempts": attempts},
             ) from exc
-    raise grounding_v2.GroundingV2Error(
-        "Qwen returned no schema-valid command envelope after the format retry",
-        code="grounding_parser_unavailable",
-        details={"attempts": attempts},
-    )
+    raise RuntimeError("unreachable Qwen interpretation loop")
 
 
 def parse_request_intent(
@@ -2656,6 +2658,11 @@ if app is not None:
                 "release_approval": STATE.get("v2_release_approval"),
                 "qwen_interprets_every_request": True,
                 "semantic_fallback": False,
+                "semantic_contract_version": (
+                    grounding_v2.QWEN_SEMANTIC_CONTRACT_VERSION
+                ),
+                "schema_constrained_generation": True,
+                "max_interpretation_attempts": 3,
                 "max_anchors": grounding_v2.MAX_ANCHORS,
                 "max_relationships": grounding_v2.MAX_RELATIONSHIPS,
                 "max_prompts_per_entity": grounding_v2.MAX_PROMPTS_PER_ENTITY,

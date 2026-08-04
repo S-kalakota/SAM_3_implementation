@@ -54,6 +54,32 @@ def interpretation_value():
     }
 
 
+def interpretation_semantics():
+    return {
+        "action": {"type": "identify", "evidence": "find"},
+        "destination": None,
+        "target": {
+            "mention": "red block",
+            "head_noun": "block",
+            "noun_modifiers": [],
+            "attributes": [{"type": "color", "evidence": "red"}],
+            "selector": None,
+        },
+        "anchors": [
+            {
+                "mention": "blue bin",
+                "head_noun": "bin",
+                "noun_modifiers": [],
+                "attributes": [{"type": "color", "evidence": "blue"}],
+                "selector": None,
+            }
+        ],
+        "relationships": [
+            {"type": "next_to", "anchor_index": 0, "evidence": "beside"}
+        ],
+    }
+
+
 def args():
     return argparse.Namespace(
         qwen_model="fake",
@@ -63,23 +89,37 @@ def args():
     )
 
 
-def test_qwen_interpretation_has_one_format_only_retry():
-    valid = json.dumps(interpretation_value())
+def test_qwen_interpretation_repairs_format_then_evidence_with_fresh_prompts():
+    invalid_evidence = interpretation_semantics()
+    invalid_evidence["target"]["mention"] = "green block"
+    valid = json.dumps(interpretation_semantics())
     with mock.patch.object(
         mask_service.local_qwen,
         "qwen_generate",
-        side_effect=["not-json", valid],
+        side_effect=["not-json", json.dumps(invalid_evidence), valid],
     ) as generate:
         envelope, record = mask_service.qwen_command_envelope(
             interpretation_value()["raw_command"], args()
         )
-    assert generate.call_count == 2
+    assert generate.call_count == 3
     assert record["status"] == "accepted"
+    assert record["schema_constrained_generation"] is True
     assert envelope["relationships"][0]["type"] == "next_to"
+    for call in generate.call_args_list:
+        assert call.kwargs["do_sample"] is False
+        assert call.kwargs["repetition_penalty"] == 1.0
+        assert call.kwargs["json_schema"] == grounding_v2.qwen_semantic_json_schema()
+        assert "response_prefix" not in call.kwargs
+        assert len(call.args[0]) == 2
+    second_user = generate.call_args_list[1].args[0][1]["content"]
+    third_user = generate.call_args_list[2].args[0][1]["content"]
+    assert "invalid_interpretation_json" in second_user
+    assert "missing_source_evidence" in third_user
+    assert "not-json" not in second_user
 
 
-def test_semantic_evidence_failure_is_not_retried_or_fallback_parsed():
-    invalid = interpretation_value()
+def test_semantic_evidence_retry_exhaustion_preserves_validation_error():
+    invalid = interpretation_semantics()
     invalid["target"]["mention"] = "green block"
     with mock.patch.object(
         mask_service.local_qwen,
@@ -87,8 +127,37 @@ def test_semantic_evidence_failure_is_not_retried_or_fallback_parsed():
         return_value=json.dumps(invalid),
     ) as generate:
         with pytest.raises(grounding_v2.GroundingV2Error) as caught:
-            mask_service.qwen_command_envelope(invalid["raw_command"], args())
+            mask_service.qwen_command_envelope(
+                interpretation_value()["raw_command"],
+                args(),
+            )
     assert caught.value.code == "missing_source_evidence"
+    assert caught.value.details["attempt_count"] == 3
+    assert generate.call_count == 3
+
+
+def test_unsafe_unresolved_reference_is_not_retried():
+    semantics = {
+        "action": {"type": "pick", "evidence": "pick"},
+        "destination": None,
+        "target": {
+            "mention": "it",
+            "head_noun": "it",
+            "noun_modifiers": [],
+            "attributes": [],
+            "selector": None,
+        },
+        "anchors": [],
+        "relationships": [],
+    }
+    with mock.patch.object(
+        mask_service.local_qwen,
+        "qwen_generate",
+        return_value=json.dumps(semantics),
+    ) as generate:
+        with pytest.raises(grounding_v2.GroundingV2Error) as caught:
+            mask_service.qwen_command_envelope("pick it", args())
+    assert caught.value.code == "unsupported_reference"
     assert generate.call_count == 1
 
 
