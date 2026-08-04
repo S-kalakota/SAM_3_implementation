@@ -10,6 +10,13 @@ RUN apt-get update \
       python3-wcwidth \
  && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.mask-service.txt /tmp/requirements.mask-service.txt
+RUN python3 -m pip install --no-cache-dir \
+      --no-deps \
+      --target /opt/sam3-python \
+      -r /tmp/requirements.mask-service.txt \
+ && rm -f /tmp/requirements.mask-service.txt
+
 USER ros
 
 WORKDIR /home/team/VLA_Model_Work/SAM_3_implementation

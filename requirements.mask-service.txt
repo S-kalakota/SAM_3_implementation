@@ -1,0 +1,2 @@
+lm-format-enforcer @ https://github.com/noamgat/lm-format-enforcer/archive/2597936f55da0e3cab8a6047eba91b2ecdfe888a.tar.gz#sha256=d0f30e4c7b83841b0b8037664e007776a3827981f17e86f88e6bfac172c5179f
+interegular==0.3.3

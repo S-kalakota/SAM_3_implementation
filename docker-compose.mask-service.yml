@@ -36,7 +36,7 @@ services:
       - SAM3_QWEN_VERIFIER_MAX_NEW_TOKENS=256
       - SAM3_QWEN_VERIFIER_MIN_CONFIDENCE=0.70
       - SAM3_QWEN_VERIFIER_MAX_AREA_FRACTION=0.25
-      - PYTHONPATH=/home/team/VLA_Model_Work/SAM_3_implementation/scripts:/home/team/.local/lib/python3.12/site-packages
+      - PYTHONPATH=/opt/sam3-python:/home/team/VLA_Model_Work/SAM_3_implementation/scripts:/home/team/.local/lib/python3.12/site-packages
       - LD_LIBRARY_PATH=/usr/local/zed/lib:/host-libs/aarch64-linux-gnu
     volumes:
       - .:/home/team/VLA_Model_Work/SAM_3_implementation:rw
@@ -62,7 +62,7 @@ services:
         - >-
           import json, os, urllib.request;
           data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5));
-          assert data.get('qwen_loaded') and data.get('qwen_model') == os.environ['SAM3_AGENT_QWEN_MODEL_ID']
+          assert data.get('qwen_loaded') and data.get('qwen_model') == os.environ['SAM3_AGENT_QWEN_MODEL_ID'] and data.get('qwen_runtime', {}).get('json_schema_constraint_ready') is True
       interval: 15s
       timeout: 10s
       retries: 20

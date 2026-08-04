@@ -2,6 +2,16 @@
 
 ## Quick start
 
+Install the pinned JSON-grammar dependency in the project environment after
+pulling this version. Managed Docker deployments should also be rebuilt once
+because the dependency is installed into the image outside the bind-mounted
+project environment:
+
+```bash
+.venv/bin/python -m pip install -r requirements.mask-service.txt
+./sam3 rebuild
+```
+
 From this directory, submit an instruction with one command:
 
 ```bash
@@ -89,14 +99,17 @@ Use the direct SAM path without the Qwen fallback when deliberately testing it:
 
 ## Version-2 identification pipeline
 
-1. Qwen2.5-VL-7B returns one strict command envelope with the raw command,
-   exact visual evidence span, allowlisted action, separate destination, target,
-   up to three anchors, entity-scoped attributes/selectors, and up to four
-   normalized relationships.
-2. Deterministic validation checks literal evidence, rejects repeated ambiguous
-   spans and unsupported references, normalizes only declared relationship
-   operators, and seals both the visual intent and complete envelope with
-   SHA-256 hashes. There is one format-only retry and no semantic fallback.
+1. Qwen2.5-VL-7B returns only a compact semantic object containing the action,
+   destination, target, up to three anchors, entity-scoped
+   attributes/selectors, and up to four relationships. A pinned JSON-schema
+   grammar masks invalid tokens during generation, and interpretation uses
+   greedy decoding with repetition penalty `1.0`.
+2. Deterministic code supplies the exact raw command, schema version, entity
+   IDs, case-preserving attribute values, visual evidence span, and hashes. It
+   validates literal evidence, rejects repeated ambiguous spans and unsupported
+   references, and normalizes only declared relationship operators. At most two
+   fresh corrective generations receive the exact validator failure; no
+   deterministic semantic parser or fallback is used.
 3. Each entity receives at most four open-vocabulary prompts: exact mention,
    attribute-qualified head noun, noun-modifier plus head noun, and head noun.
 4. One Qwen visual call proposes boxes for every entity. The parity-approved

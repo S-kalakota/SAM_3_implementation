@@ -8,8 +8,12 @@ Request:
 {"raw_command":"grab the red box inside the blue bin and put it in the drop zone"}
 ```
 
-Qwen returns the semantic fields. Deterministic code validates literal evidence,
-normalizes declared operators, enforces limits, and adds the hashes:
+Qwen returns a private five-field semantic object under token-level JSON-schema
+constraints: `action`, `destination`, `target`, `anchors`, and `relationships`.
+It does not echo the command or generate schema constants, IDs, attribute
+values, evidence spans, or hashes. Deterministic code adds those structural
+fields, validates literal evidence, normalizes declared operators, enforces
+limits, and returns the unchanged public envelope:
 
 ```json
 {
@@ -49,6 +53,12 @@ The visual phrase is not free text: it must equal the exact raw-command slice
 from the earliest to latest target, anchor, or relationship evidence. Every
 entity mention and relationship operator must occur exactly once. Repeated
 ambiguous or missing evidence is refused.
+
+Interpretation uses deterministic decoding with repetition penalty `1.0`. A
+schema/evidence-placement failure may receive at most two fresh Qwen repair
+attempts containing the exact validator diagnostic. Unresolved references,
+complexity violations, and runtime failures are not reinterpreted or handled by
+a semantic fallback.
 
 ## `POST /v2/segment`
 
