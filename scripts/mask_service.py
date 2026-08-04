@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - exercised only before deps are install
 
 import local_qwen
 import mask_depth
+import qwen_candidate_verifier as candidate_verifier
 import task2_sam31_image_prompt as task2
 import task5_zed_live_prompt as task5
 import task6_sam31_agent as task6
@@ -38,6 +39,15 @@ import task6_sam31_agent as task6
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUN_DIR = PROJECT_ROOT / "outputs" / "service"
 DEFAULT_SELECTION_ROI = os.environ.get("MASK_SERVICE_SELECTION_ROI")
+DEFAULT_VERIFIER_MAX_NEW_TOKENS = int(
+    os.environ.get("SAM3_QWEN_VERIFIER_MAX_NEW_TOKENS", "256")
+)
+DEFAULT_VERIFIER_MIN_CONFIDENCE = float(
+    os.environ.get("SAM3_QWEN_VERIFIER_MIN_CONFIDENCE", "0.70")
+)
+DEFAULT_VERIFIER_MAX_AREA_FRACTION = float(
+    os.environ.get("SAM3_QWEN_VERIFIER_MAX_AREA_FRACTION", "0.25")
+)
 
 LOCK = threading.Lock()
 STATE: dict[str, Any] = {}
@@ -73,9 +83,35 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--qwen-device-map", default=local_qwen.DEFAULT_DEVICE_MAP)
     parser.add_argument(
+        "--verifier-max-new-tokens",
+        default=DEFAULT_VERIFIER_MAX_NEW_TOKENS,
+        type=int,
+        help="Maximum Qwen output tokens for candidate verification.",
+    )
+    parser.add_argument(
+        "--verifier-min-confidence",
+        default=DEFAULT_VERIFIER_MIN_CONFIDENCE,
+        type=float,
+        help="Reject Qwen candidate selections below this confidence.",
+    )
+    parser.add_argument(
+        "--verifier-max-area-fraction",
+        default=DEFAULT_VERIFIER_MAX_AREA_FRACTION,
+        type=float,
+        help=(
+            "Reject a Qwen-selected mask covering more than this fraction of "
+            "the cropped image."
+        ),
+    )
+    parser.add_argument(
         "--allow-qwen-downloads",
         action="store_true",
         help="Allow Transformers to fetch missing Qwen files. Default is local cache only.",
+    )
+    parser.add_argument(
+        "--warm-qwen",
+        action="store_true",
+        help="Load cached Qwen weights during startup instead of on the first request.",
     )
     task5.add_crop_arguments(parser)
     parser.add_argument("--resolution", default="HD720", choices=task5.RESOLUTION_NAMES)
@@ -111,7 +147,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-fa3", action="store_true")
     parser.add_argument("--verbose-load", action="store_true")
     parser.add_argument("--debug", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.verifier_max_new_tokens <= 0:
+        parser.error("--verifier-max-new-tokens must be greater than zero")
+    if not 0.0 <= args.verifier_min_confidence <= 1.0:
+        parser.error("--verifier-min-confidence must be in [0, 1]")
+    if not 0.0 < args.verifier_max_area_fraction <= 1.0:
+        parser.error("--verifier-max-area-fraction must be in (0, 1]")
+    return args
 
 
 def require_server_deps() -> None:
@@ -421,6 +464,16 @@ def startup(args: argparse.Namespace) -> None:
         verbose_load=args.verbose_load,
     )
 
+    STATE["qwen_runtime"] = None
+    if args.warm_qwen:
+        print(f"loading cached Qwen once: {args.qwen_model}...")
+        STATE["qwen_runtime"] = local_qwen.preload_qwen(
+            args.qwen_model,
+            local_files_only=not args.allow_qwen_downloads,
+            device_map=args.qwen_device_map,
+        )
+        print(f"Qwen ready: {STATE['qwen_runtime']}")
+
     print("opening ZED camera once...")
     STATE["sl"], STATE["zed"] = task5.open_zed(args)
     print("service ready")
@@ -483,6 +536,174 @@ def summarize_kept(
     }
 
 
+def build_verifier_candidate_records(
+    kept: list[tuple[np.ndarray, float]],
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Describe score/area-gated candidates using one-based verifier IDs."""
+
+    kept_candidates = [candidate for candidate in candidates if candidate["kept"]]
+    if len(kept_candidates) != len(kept):
+        raise ValueError("kept masks and candidate metadata are inconsistent")
+
+    records = []
+    for candidate_id, ((mask, score), candidate) in enumerate(
+        zip(kept, kept_candidates), start=1
+    ):
+        ys, xs = np.where(mask)
+        if xs.size == 0:
+            raise ValueError(f"Candidate {candidate_id} has an empty mask")
+        height, width = mask.shape
+        records.append(
+            {
+                "candidate_id": candidate_id,
+                "sam_index": int(candidate["index"]),
+                "sam_score": float(score),
+                "area_pixels": int(candidate["area_pixels"]),
+                "area_fraction": round(float(mask.mean()), 6),
+                "center_xy_crop_pixels": [
+                    round(float(xs.mean()), 2),
+                    round(float(ys.mean()), 2),
+                ],
+                "bbox_xywh_crop_pixels": [
+                    int(xs.min()),
+                    int(ys.min()),
+                    int(xs.max() - xs.min() + 1),
+                    int(ys.max() - ys.min() + 1),
+                ],
+                "crop_size_wh_pixels": [int(width), int(height)],
+            }
+        )
+    return records
+
+
+def verify_candidates_with_qwen(
+    *,
+    request: str,
+    target_phrase: str,
+    selector: str | None,
+    rgb_np: np.ndarray,
+    frame_path: Path,
+    req_dir: Path,
+    artifact_stem: str,
+    kept: list[tuple[np.ndarray, float]],
+    candidates: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> tuple[
+    list[tuple[np.ndarray, float]],
+    list[dict[str, Any]],
+    dict[str, Any],
+]:
+    """Run the fail-closed Qwen visual gate before depth or spatial selection."""
+
+    verification: dict[str, Any] = {
+        "status": "not_run",
+        "decision": None,
+        "selected_candidate_ids": [],
+        "model_selected_candidate_ids": [],
+        "selected_sam_indices": [],
+        "confidence": None,
+        "reason": "no_score_area_gated_candidates",
+        "model": args.qwen_model,
+        "target_phrase": target_phrase,
+        "selector_deferred": selector,
+        "min_select_confidence": float(args.verifier_min_confidence),
+        "max_area_fraction": float(args.verifier_max_area_fraction),
+        "candidate_count": len(kept),
+        "candidate_records": [],
+        "candidate_overlay": None,
+        "candidate_zoom": None,
+        "candidate_manifest": None,
+        "attempts": [],
+    }
+    if not kept:
+        return kept, candidates, verification
+
+    try:
+        candidate_records = build_verifier_candidate_records(kept, candidates)
+        candidate_overlay_path = req_dir / f"{artifact_stem}_qwen_candidates.png"
+        candidate_overlay = candidate_verifier.render_numbered_candidates(
+            rgb_np,
+            kept,
+            candidate_overlay_path,
+        )
+        candidate_zoom_path = req_dir / f"{artifact_stem}_qwen_candidate_zooms.png"
+        candidate_zoom = candidate_verifier.render_candidate_zooms(
+            rgb_np,
+            kept,
+            candidate_zoom_path,
+        )
+        manifest_path = req_dir / f"{artifact_stem}_qwen_candidates.json"
+        manifest_path.write_text(
+            json.dumps(candidate_records, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        def send_generate_request(messages: list[dict[str, Any]]) -> str:
+            return local_qwen.qwen_generate(
+                messages,
+                model_id=args.qwen_model,
+                max_new_tokens=args.verifier_max_new_tokens,
+                local_files_only=not args.allow_qwen_downloads,
+                device_map=args.qwen_device_map,
+                do_sample=False,
+                response_prefix='{"decision":',
+            )
+
+        verification = candidate_verifier.run_visual_verifier(
+            request=request,
+            target_phrase=target_phrase,
+            selector=selector,
+            frame_path=frame_path,
+            candidate_overlay_path=candidate_overlay_path,
+            candidate_zoom_path=candidate_zoom_path,
+            candidate_records=candidate_records,
+            send_generate_request=send_generate_request,
+            min_select_confidence=args.verifier_min_confidence,
+        )
+        verification = candidate_verifier.apply_max_area_fraction_policy(
+            verification,
+            candidate_records,
+            args.verifier_max_area_fraction,
+        )
+        verification.update(
+            {
+                "model": args.qwen_model,
+                "target_phrase": target_phrase,
+                "selector_deferred": selector,
+                "min_select_confidence": float(args.verifier_min_confidence),
+                "max_area_fraction": float(args.verifier_max_area_fraction),
+                "candidate_count": len(candidate_records),
+                "candidate_records": candidate_records,
+                "candidate_overlay": candidate_overlay["output"],
+                "candidate_zoom": candidate_zoom["output"],
+                "candidate_manifest": str(manifest_path),
+            }
+        )
+    except Exception as exc:
+        verification.update(
+            {
+                "status": "error",
+                "decision": None,
+                "selected_candidate_ids": [],
+                "model_selected_candidate_ids": [],
+                "confidence": None,
+                "reason": f"Qwen verifier setup failed: {exc!r}",
+                "attempts": [],
+            }
+        )
+
+    kept, candidates, selected_sam_indices = (
+        candidate_verifier.apply_verifier_selection(
+            kept,
+            candidates,
+            verification,
+        )
+    )
+    verification["selected_sam_indices"] = selected_sam_indices
+    return kept, candidates, verification
+
+
 def direct_segment(
     *,
     request: str,
@@ -509,14 +730,19 @@ def direct_segment(
         conf_thresh=args.presence_conf_threshold,
         min_area=args.min_area,
     )
-    candidate_overlay = None
-    if selector is not None and len(kept) > 1:
-        candidate_overlay = task2.overlay_masks(
-            rgb_np,
-            kept,
-            f"candidates: {sam_prompt}",
-            req_dir / "overlay_candidates.png",
-        )
+    fallback_eligible = len(kept) == 0
+    kept, candidates, verification = verify_candidates_with_qwen(
+        request=request,
+        target_phrase=sam_prompt,
+        selector=selector,
+        rgb_np=rgb_np,
+        frame_path=frame_path,
+        req_dir=req_dir,
+        artifact_stem="direct",
+        kept=kept,
+        candidates=candidates,
+        args=args,
+    )
     kept, candidates, selection = select_spatial_mask(
         kept,
         candidates,
@@ -532,16 +758,21 @@ def direct_segment(
         req_dir / "overlay_direct.png",
     )
     return {
-        "path": "direct_spatial" if selection is not None else "direct",
+        "path": "direct_verified_spatial"
+        if selection is not None
+        else "direct_verified",
         "kept": kept,
         "presence_gate": summarize_kept(kept=kept, candidates=candidates, args=args),
         "sam_json": sam_json,
         "overlay": overlay,
-        "candidate_overlay": candidate_overlay,
+        "candidate_overlay": verification.get("candidate_overlay"),
+        "candidate_zoom": verification.get("candidate_zoom"),
         "agent_render_output": None,
         "sam_prompt": sam_prompt,
         "selection": selection,
         "intent": intent,
+        "verification": verification,
+        "fallback_eligible": fallback_eligible,
     }
 
 
@@ -549,9 +780,11 @@ def agent_fallback_segment(
     *,
     request: str,
     rgb_np: np.ndarray,
+    depth_np: np.ndarray,
     frame_path: Path,
     req_dir: Path,
     args: argparse.Namespace,
+    intent: dict[str, Any],
 ) -> dict[str, Any]:
     agent_dir = req_dir / "agent_workspace"
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -575,6 +808,28 @@ def agent_fallback_segment(
         conf_thresh=args.presence_conf_threshold,
         min_area=args.min_area,
     )
+    target_phrase = intent["target_phrase"]
+    selector = intent.get("selector")
+    kept, candidates, verification = verify_candidates_with_qwen(
+        request=request,
+        target_phrase=target_phrase,
+        selector=selector,
+        rgb_np=rgb_np,
+        frame_path=frame_path,
+        req_dir=req_dir,
+        artifact_stem="agent",
+        kept=kept,
+        candidates=candidates,
+        args=args,
+    )
+    kept, candidates, selection = select_spatial_mask(
+        kept,
+        candidates,
+        selector,
+        depth_np=depth_np,
+        min_valid_depth_fraction=args.selection_min_valid_depth_fraction,
+        selection_roi=args.selection_roi,
+    )
     overlay = task2.overlay_masks(
         rgb_np,
         kept,
@@ -590,21 +845,22 @@ def agent_fallback_segment(
     history_path.write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
 
     return {
-        "path": "agent",
+        "path": "agent_verified_spatial"
+        if selection is not None
+        else "agent_verified",
         "kept": kept,
         "presence_gate": summarize_kept(kept=kept, candidates=candidates, args=args),
         "sam_json": str(final_outputs_path),
         "overlay": overlay,
-        "candidate_overlay": None,
+        "candidate_overlay": verification.get("candidate_overlay"),
+        "candidate_zoom": verification.get("candidate_zoom"),
         "agent_render_output": str(agent_render_output),
         "agent_history": str(history_path),
-        "sam_prompt": request,
-        "selection": None,
-        "intent": {
-            "target_phrase": request,
-            "selector": None,
-            "parser": "agent_fallback",
-        },
+        "sam_prompt": target_phrase,
+        "selection": selection,
+        "intent": {**intent, "fallback": "agent"},
+        "verification": verification,
+        "fallback_eligible": False,
     }
 
 
@@ -625,16 +881,20 @@ def segment_once(request: str, *, use_agent_fallback: bool = True) -> dict[str, 
         req_dir=req_dir,
         args=args,
     )
-    if result["presence_gate"]["num_kept"] == 0 and use_agent_fallback:
+    if result["fallback_eligible"] and use_agent_fallback:
+        direct_intent = result["intent"]
         result = agent_fallback_segment(
             request=request,
             rgb_np=rgb_np,
+            depth_np=depth_np,
             frame_path=frame_path,
             req_dir=req_dir,
             args=args,
+            intent=direct_intent,
         )
 
     kept = result.pop("kept")
+    result.pop("fallback_eligible", None)
     object_depth = task5.object_depth_report(
         kept,
         depth_np=depth_np,
@@ -654,11 +914,13 @@ def segment_once(request: str, *, use_agent_fallback: bool = True) -> dict[str, 
         "zed_frame": frame_info,
         "overlay": result["overlay"],
         "candidate_overlay": result.get("candidate_overlay"),
+        "candidate_zoom": result.get("candidate_zoom"),
         "sam_json": result["sam_json"],
         "agent_render_output": result.get("agent_render_output"),
         "sam_prompt": result.get("sam_prompt", request),
         "selection": result.get("selection"),
         "intent": result.get("intent"),
+        "verification": result.get("verification"),
         "elapsed_s": round(time.monotonic() - t0, 2),
         "output_dir": str(req_dir),
     }
@@ -684,6 +946,17 @@ if app is not None:
             "crop_xywh": None
             if args is None or args.crop is None
             else [int(value) for value in args.crop],
+            "qwen_model": None if args is None else args.qwen_model,
+            "qwen_loaded": STATE.get("qwen_runtime") is not None,
+            "qwen_runtime": STATE.get("qwen_runtime"),
+            "qwen_verifier": None
+            if args is None
+            else {
+                "min_select_confidence": float(args.verifier_min_confidence),
+                "max_area_fraction": float(args.verifier_max_area_fraction),
+                "max_new_tokens": int(args.verifier_max_new_tokens),
+                "fail_closed": True,
+            },
         }
 
     @app.post("/segment")
