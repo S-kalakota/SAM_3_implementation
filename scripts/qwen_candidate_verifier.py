@@ -278,6 +278,7 @@ def build_verifier_messages(
     candidate_overlay_path: Path,
     candidate_zoom_path: Path,
     candidate_records: list[dict[str, Any]],
+    grounding_intent_value: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the three-image, strict-JSON visual verification prompt."""
 
@@ -296,6 +297,9 @@ def build_verifier_messages(
         "confidence. When uncertain, return no_match. "
         "Do not apply relative selectors such as topmost or rightmost; deterministic "
         "geometry will apply them after semantic verification. Return JSON only, with "
+        "Use visible printed text, logos, colors, shape, material, and the requested "
+        "source region when those fields are present in the structured intent. Never "
+        "invent an attribute that is not in that intent. "
         "exactly these keys: decision, selected_candidate_ids, confidence, reason. "
         "decision must be select or no_match. selected_candidate_ids must contain "
         "every semantic target candidate, or [] for no_match. confidence must be a "
@@ -307,10 +311,15 @@ def build_verifier_messages(
         "other three required keys, and close it with }. Do not repeat the prefix."
     )
     details = json.dumps(candidate_records, separators=(",", ":"))
+    intent_details = json.dumps(
+        grounding_intent_value,
+        separators=(",", ":"),
+    ) if grounding_intent_value is not None else "null"
     selector_text = selector if selector is not None else "none"
     user_text = (
         f"Original robot request: {request!r}. Semantic target phrase: "
         f"{target_phrase!r}. Deferred spatial selector: {selector_text!r}. "
+        f"Canonical structured grounding intent: {intent_details}. "
         f"Candidate metadata: {details}. For each candidate, inspect the colored outer "
         "outline and identify the physical object or structure it encloses. Do not "
         "credit a candidate for a smaller requested object that is merely visible "
@@ -351,6 +360,7 @@ def run_visual_verifier(
     candidate_records: list[dict[str, Any]],
     send_generate_request: Callable[[list[dict[str, Any]]], str],
     min_select_confidence: float,
+    grounding_intent_value: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ask Qwen once, allow one format-only retry, and otherwise fail closed."""
 
@@ -367,6 +377,7 @@ def run_visual_verifier(
         candidate_overlay_path=candidate_overlay_path,
         candidate_zoom_path=candidate_zoom_path,
         candidate_records=candidate_records,
+        grounding_intent_value=grounding_intent_value,
     )
     attempts = []
     for attempt_number in (1, 2):
