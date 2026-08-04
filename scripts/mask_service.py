@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow Transformers to fetch missing Qwen files. Default is local cache only.",
     )
-    parser.add_argument("--crop", type=task5.parse_crop)
+    task5.add_crop_arguments(parser)
     parser.add_argument("--resolution", default="HD720", choices=task5.RESOLUTION_NAMES)
     parser.add_argument("--camera-fps", default=30, type=int)
     parser.add_argument("--view", default="LEFT", choices=task5.VIEW_NAMES)
@@ -103,8 +103,8 @@ def parse_args() -> argparse.Namespace:
         else None,
         type=task5.parse_crop,
         help=(
-            "Optional workspace ROI as x,y,w,h. Spatial selection is performed "
-            "inside this image region when any candidates fall inside it."
+            "Optional crop-local workspace ROI as x,y,w,h. Spatial selection is "
+            "performed inside this region when any candidates fall inside it."
         ),
     )
     parser.add_argument("--grab-timeout", default=5.0, type=float)
@@ -675,11 +675,15 @@ if app is not None:
 
     @app.get("/health")
     def health() -> dict[str, Any]:
+        args = STATE.get("args")
         return {
             "sam_loaded": "sam" in STATE,
             "camera_open": "zed" in STATE,
             "busy": LOCK.locked(),
             "uptime_s": round(time.monotonic() - STATE.get("t0", time.monotonic()), 1),
+            "crop_xywh": None
+            if args is None or args.crop is None
+            else [int(value) for value in args.crop],
         }
 
     @app.post("/segment")

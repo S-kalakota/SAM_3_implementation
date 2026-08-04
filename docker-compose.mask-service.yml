@@ -30,5 +30,5 @@ services:
     working_dir: /home/team/VLA_Model_Work/SAM_3_implementation
     command: >
       bash -lc '
-        exec .venv/bin/python -u scripts/mask_service.py --host 127.0.0.1 --port 8765 --selection-roi ${MASK_SERVICE_SELECTION_ROI:-430,380,430,170}
+        exec .venv/bin/python -u scripts/mask_service.py --host 127.0.0.1 --port 8765
       '
