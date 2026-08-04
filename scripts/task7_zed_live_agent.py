@@ -101,7 +101,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow Transformers to fetch missing Qwen files. Default is local cache only.",
     )
-    parser.add_argument("--crop", type=task5.parse_crop)
+    task5.add_crop_arguments(parser)
     parser.add_argument("--resolution", default="HD720", choices=task5.RESOLUTION_NAMES)
     parser.add_argument("--camera-fps", default=30, type=int)
     parser.add_argument("--view", default="LEFT", choices=task5.VIEW_NAMES)

@@ -1,0 +1,15 @@
+FROM fairino-plan-executor:thor-arm64
+
+USER root
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      kmod \
+      libturbojpeg \
+      python3-requests \
+      python3-wcwidth \
+ && rm -rf /var/lib/apt/lists/*
+
+USER ros
+
+WORKDIR /home/team/VLA_Model_Work/SAM_3_implementation

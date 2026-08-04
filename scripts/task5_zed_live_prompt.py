@@ -22,6 +22,7 @@ DEFAULT_STEREO_FRAME_OUTPUT = PROJECT_ROOT / "outputs/task5_live_frame_stereo.pn
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/task5_zed_live_prompt.json"
 DEFAULT_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live.png"
 DEFAULT_STEREO_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live_stereo.png"
+DEFAULT_CROP = (448, 360, 384, 360)
 
 
 RESOLUTION_NAMES = ("HD2K", "HD1200", "HD1080", "HD720", "SVGA", "VGA", "AUTO")
@@ -39,6 +40,29 @@ def parse_crop(value: str) -> tuple[int, int, int, int]:
     if x < 0 or y < 0 or width <= 0 or height <= 0:
         raise argparse.ArgumentTypeError("crop must use x>=0, y>=0, w>0, h>0")
     return x, y, width, height
+
+
+def add_crop_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the shared ZED crop controls to a command-line parser."""
+
+    crop_group = parser.add_mutually_exclusive_group()
+    crop_group.add_argument(
+        "--crop",
+        type=parse_crop,
+        metavar="X,Y,W,H",
+        help=(
+            "Override the standard HD720 pixel crop as x,y,w,h. "
+            f"Default: {','.join(str(value) for value in DEFAULT_CROP)}."
+        ),
+    )
+    crop_group.add_argument(
+        "--no-crop",
+        dest="crop",
+        action="store_const",
+        const=None,
+        help="Disable the standard crop and process the complete camera frame.",
+    )
+    parser.set_defaults(crop=DEFAULT_CROP)
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,11 +94,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         help="Seconds between preview frame refreshes.",
     )
-    parser.add_argument(
-        "--crop",
-        type=parse_crop,
-        help="Optional pixel crop as x,y,w,h after converting the ZED frame to RGB.",
-    )
+    add_crop_arguments(parser)
     parser.add_argument(
         "--frame-output",
         default=DEFAULT_FRAME_OUTPUT,
