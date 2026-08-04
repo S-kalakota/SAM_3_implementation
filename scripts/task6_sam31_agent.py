@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ from sam3.model_builder import build_sam3_multiplex_video_predictor
 from sam3.train.masks_ops import rle_encode
 
 import local_qwen
+import grounding_dino
 import task2_sam31_image_prompt as task2
 
 
@@ -221,6 +223,172 @@ class MultiplexSam3AgentService:
         output_json_path.write_text(json.dumps(agent_outputs, indent=2) + "\n", encoding="utf-8")
         if pred_masks:
             visualize(agent_outputs).save(output_image_path)
+        else:
+            image.save(output_image_path)
+        return str(output_json_path)
+
+    def segment_boxes(
+        self,
+        *,
+        image_path: str,
+        proposals: list[dict[str, Any]],
+        output_folder_path: str,
+    ) -> str:
+        """Run one positive SAM box prompt per proposal on one image state.
+
+        At most one mask is retained for each proposal.  Output arrays remain in
+        proposal order so ``pred_masks``, ``pred_boxes``, verifier IDs, and the
+        service presence-gate indices describe the same candidate.
+        """
+
+        if not 1 <= len(proposals) <= grounding_dino.DEFAULT_MAX_PROPOSALS:
+            raise ValueError(
+                "SAM box prompting requires between one and three proposals"
+            )
+        image_path_obj = Path(image_path).expanduser().resolve()
+        image = Image.open(image_path_obj).convert("RGB")
+        width, height = image.size
+        output_dir = Path(output_folder_path).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_json_path = output_dir / "combined_candidates.json"
+        output_image_path = output_dir / "combined_candidates.png"
+
+        selected_masks: list[np.ndarray] = []
+        selected_scores: list[float] = []
+        selected_boxes: list[list[float]] = []
+        provenance: list[dict[str, Any]] = []
+        prompt_timings: list[dict[str, Any]] = []
+        inference_state = None
+        try:
+            inference_state = self.model.init_state(
+                resource_path=str(image_path_obj),
+                offload_video_to_cpu=False,
+                async_loading_frames=False,
+            )
+            for proposal in proposals:
+                proposal_id = int(proposal["proposal_id"])
+                padded_box = [
+                    float(value)
+                    for value in proposal["padded_box_xyxy_crop_pixels"]
+                ]
+                normalized_box = grounding_dino.pixel_xyxy_to_normalized_sam_xywh(
+                    padded_box,
+                    width,
+                    height,
+                )
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                prompt_started = time.monotonic()
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    _, raw_outputs = self.model.add_prompt(
+                        inference_state=inference_state,
+                        frame_idx=0,
+                        text_str="visual",
+                        boxes_xywh=[normalized_box],
+                        box_labels=[1],
+                        output_prob_thresh=self.threshold,
+                    )
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                elapsed_s = time.monotonic() - prompt_started
+
+                masks = task2.masks_to_bool_array(
+                    raw_outputs["out_binary_masks"]
+                )
+                scores = task2.to_numpy_array(
+                    raw_outputs.get("out_probs", [])
+                ).astype(np.float32, copy=False).reshape(-1)
+                eligible: list[tuple[float, int, np.ndarray, tuple[float, float]]] = []
+                for raw_index, mask in enumerate(masks):
+                    if raw_index >= len(scores) or not mask.any():
+                        continue
+                    center = grounding_dino.mask_center_xy(mask)
+                    if grounding_dino.box_contains_point(padded_box, center):
+                        eligible.append(
+                            (float(scores[raw_index]), raw_index, mask, center)
+                        )
+
+                timing_record: dict[str, Any] = {
+                    "proposal_id": proposal_id,
+                    "elapsed_s": float(elapsed_s),
+                    "raw_candidate_count": int(len(masks)),
+                    "center_valid_candidate_count": int(len(eligible)),
+                    "selected_raw_sam_index": None,
+                }
+                if not eligible:
+                    prompt_timings.append(timing_record)
+                    continue
+
+                score, raw_index, mask, center = max(
+                    eligible,
+                    key=lambda item: (item[0], -item[1]),
+                )
+                timing_record["selected_raw_sam_index"] = int(raw_index)
+                prompt_timings.append(timing_record)
+                mask_box = grounding_dino.mask_bbox_xywh_normalized(mask)
+                mask_artifact = output_dir / f"mask_{len(selected_masks) + 1:03d}.png"
+                Image.fromarray(mask.astype(np.uint8) * 255, mode="L").save(
+                    mask_artifact
+                )
+                selected_masks.append(mask)
+                selected_scores.append(float(score))
+                selected_boxes.append(mask_box)
+                provenance.append(
+                    {
+                        "candidate_index": len(selected_masks) - 1,
+                        "proposal_id": proposal_id,
+                        "dino_index": int(proposal["dino_index"]),
+                        "dino_phrase": str(proposal["phrase"]),
+                        "dino_text_label": str(proposal.get("text_label", "")),
+                        "dino_score": float(proposal["dino_score"]),
+                        "dino_original_box_xyxy_crop_pixels": list(
+                            proposal["original_box_xyxy_crop_pixels"]
+                        ),
+                        "sam_prompt_box_xyxy_crop_pixels": padded_box,
+                        "sam_prompt_box_xywh_normalized": normalized_box,
+                        "sam_prompt": "visual",
+                        "sam_box_label": 1,
+                        "sam_raw_index": int(raw_index),
+                        "sam_score": float(score),
+                        "sam_prompt_elapsed_s": float(elapsed_s),
+                        "mask_center_xy_crop_pixels": [
+                            float(center[0]),
+                            float(center[1]),
+                        ],
+                        "mask_box_xywh_normalized": mask_box,
+                        "mask_area_pixels": int(mask.sum()),
+                        "mask_artifact": str(mask_artifact),
+                    }
+                )
+        finally:
+            if inference_state is not None:
+                del inference_state
+
+        if selected_masks:
+            rles = rle_encode(
+                torch.as_tensor(np.stack(selected_masks), dtype=torch.bool)
+            )
+            pred_masks = [rle["counts"] for rle in rles]
+        else:
+            pred_masks = []
+        combined_outputs = {
+            "original_image_path": str(image_path_obj),
+            "output_image_path": str(output_image_path),
+            "orig_img_h": int(height),
+            "orig_img_w": int(width),
+            "pred_boxes": selected_boxes,
+            "pred_masks": pred_masks,
+            "pred_scores": selected_scores,
+            "proposal_provenance": provenance,
+            "sam_box_prompt_timings": prompt_timings,
+            "sam_image_state_count": 1,
+        }
+        output_json_path.write_text(
+            json.dumps(combined_outputs, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if pred_masks:
+            visualize(combined_outputs).save(output_image_path)
         else:
             image.save(output_image_path)
         return str(output_json_path)

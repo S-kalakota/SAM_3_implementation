@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - exercised only before deps are install
     uvicorn = None
 
 import local_qwen
+import grounding_dino
 import mask_depth
 import qwen_candidate_verifier as candidate_verifier
 import task2_sam31_image_prompt as task2
@@ -65,6 +66,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--run-dir", default=DEFAULT_RUN_DIR, type=Path)
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=("dino", "legacy"),
+        default="dino",
+        help="Use bounded Grounding DINO box proposals or the legacy SAM text path.",
+    )
+    parser.add_argument("--dino-model", default=grounding_dino.DEFAULT_MODEL_ID)
+    parser.add_argument(
+        "--dino-box-threshold",
+        default=grounding_dino.DEFAULT_BOX_THRESHOLD,
+        type=float,
+    )
+    parser.add_argument(
+        "--dino-text-threshold",
+        default=grounding_dino.DEFAULT_TEXT_THRESHOLD,
+        type=float,
+    )
+    parser.add_argument(
+        "--dino-nms-iou",
+        default=grounding_dino.DEFAULT_NMS_IOU,
+        type=float,
+    )
+    parser.add_argument(
+        "--dino-max-proposals",
+        default=grounding_dino.DEFAULT_MAX_PROPOSALS,
+        type=int,
+    )
+    parser.add_argument(
+        "--dino-box-padding",
+        default=grounding_dino.DEFAULT_BOX_PADDING,
+        type=float,
+    )
+    parser.add_argument(
+        "--warm-dino",
+        action="store_true",
+        help=(
+            "Warm cached DINO weights at startup. DINO mode always warms; this "
+            "flag can also preflight the model while running legacy mode."
+        ),
+    )
     parser.add_argument("--checkpoint", default=task6.DEFAULT_CHECKPOINT, type=Path)
     parser.add_argument("--threshold", default=0.05, type=float)
     parser.add_argument(
@@ -154,6 +195,16 @@ def parse_args() -> argparse.Namespace:
         parser.error("--verifier-min-confidence must be in [0, 1]")
     if not 0.0 < args.verifier_max_area_fraction <= 1.0:
         parser.error("--verifier-max-area-fraction must be in (0, 1]")
+    if not 0.0 <= args.dino_box_threshold <= 1.0:
+        parser.error("--dino-box-threshold must be in [0, 1]")
+    if not 0.0 <= args.dino_text_threshold <= 1.0:
+        parser.error("--dino-text-threshold must be in [0, 1]")
+    if not 0.0 <= args.dino_nms_iou <= 1.0:
+        parser.error("--dino-nms-iou must be in [0, 1]")
+    if not 1 <= args.dino_max_proposals <= grounding_dino.DEFAULT_MAX_PROPOSALS:
+        parser.error("--dino-max-proposals must be in [1, 3]")
+    if not 0.0 <= args.dino_box_padding <= 1.0:
+        parser.error("--dino-box-padding must be in [0, 1]")
     return args
 
 
@@ -185,6 +236,17 @@ VALID_SELECTORS = {
     "smallest",
 }
 
+SELECTOR_PATTERNS = (
+    ("rightmost", r"\bright\s*most\b|\brightmost\b|\bon the right\b|\bright side\b"),
+    ("leftmost", r"\bleft\s*most\b|\bleftmost\b|\bon the left\b|\bleft side\b"),
+    ("topmost", r"\btop\s*most\b|\btopmost\b|\bat the top\b"),
+    ("bottommost", r"\bbottom\s*most\b|\bbottommost\b|\bat the bottom\b"),
+    ("nearest", r"\bnearest\b|\bclosest\b"),
+    ("farthest", r"\bfarthest\b|\bfurthest\b"),
+    ("largest", r"\blargest\b|\bbiggest\b"),
+    ("smallest", r"\bsmallest\b"),
+)
+
 
 def first_json_object(text: str) -> dict[str, Any] | None:
     for match in re.finditer(r"\{", text):
@@ -209,47 +271,78 @@ def should_parse_natural_request(request: str) -> bool:
     )
 
 
-def fallback_intent(request: str) -> dict[str, Any]:
-    """Generic local fallback if the language parser is unavailable."""
+def deterministic_intent(request: str) -> dict[str, Any]:
+    """Parse ordinary pick commands without invoking a language model."""
+
     lowered = request.lower()
-    selector_patterns = (
-        ("rightmost", r"\bright\s*most\b|\brightmost\b|\bon the right\b|\bright side\b"),
-        ("leftmost", r"\bleft\s*most\b|\bleftmost\b|\bon the left\b|\bleft side\b"),
-        ("topmost", r"\btop\s*most\b|\btopmost\b|\bat the top\b"),
-        ("bottommost", r"\bbottom\s*most\b|\bbottommost\b|\bat the bottom\b"),
-        ("nearest", r"\bnearest\b|\bclosest\b"),
-        ("farthest", r"\bfarthest\b|\bfurthest\b"),
-        ("largest", r"\blargest\b|\bbiggest\b"),
-        ("smallest", r"\bsmallest\b"),
-    )
-    selector = None
+    matched_selectors: list[str] = []
     cleaned = lowered
-    for name, pattern in selector_patterns:
-        if selector is None and re.search(pattern, lowered):
-            selector = name
+    for name, pattern in SELECTOR_PATTERNS:
+        if re.search(pattern, lowered):
+            matched_selectors.append(name)
         cleaned = re.sub(pattern, " ", cleaned)
 
     cleaned = re.sub(r"[^a-z0-9_\- ]+", " ", cleaned)
+    relation_context = None
+    relation_match = re.search(
+        r"\b(inside|within|in\s+front\s+of|in|on|under|below|above|beside|"
+        r"next\s+to|near)\b",
+        cleaned,
+    )
+    if relation_match is not None:
+        relation_context = " ".join(cleaned[relation_match.start() :].split())
+        cleaned = cleaned[: relation_match.start()]
     cleaned = re.sub(
-        r"\b(get|grab|pick|select|find|choose|show|the|a|an|please|me|object|item|one|most)\b",
+        r"\b(can|could|would|you|get|grab|pick|select|find|choose|show|"
+        r"give|bring|take|fetch|retrieve|locate|identify|detect|segment|"
+        r"grasp|lift|point|move|up|the|a|an|please|for|me|most)\b",
         " ",
         cleaned,
     )
-    target_phrase = " ".join(cleaned.split()) or request
+    target_phrase = " ".join(cleaned.split())
+    unique_selectors = list(dict.fromkeys(matched_selectors))
+    ambiguity_reasons = []
+    if len(unique_selectors) > 1:
+        ambiguity_reasons.append("multiple_spatial_selectors")
+    if re.search(r"\bor\b", lowered):
+        ambiguity_reasons.append("disjunctive_target")
+    if not target_phrase:
+        ambiguity_reasons.append("missing_target_phrase")
+    if target_phrase in {"it", "this", "that", "this one", "that one", "one"}:
+        ambiguity_reasons.append("unresolved_reference")
+    if target_phrase in {"object", "item", "thing"}:
+        ambiguity_reasons.append("generic_target")
+    category_mentions = set(
+        re.findall(
+            r"\b(box|package|carton|bin|cup|mug|bottle|can|filter|tool)\b",
+            target_phrase,
+        )
+    )
+    if " and " in f" {target_phrase} " and len(category_mentions) > 1:
+        ambiguity_reasons.append("multiple_target_categories")
     return {
-        "target_phrase": target_phrase,
-        "selector": selector,
-        "parser": "fallback_rules",
+        "target_phrase": target_phrase or request.strip(),
+        "selector": unique_selectors[0] if len(unique_selectors) == 1 else None,
+        "parser": (
+            "deterministic_command"
+            if should_parse_natural_request(request)
+            else "deterministic_direct"
+        ),
+        "ambiguity_reasons": ambiguity_reasons,
+        "relation_context": relation_context,
     }
 
 
+def fallback_intent(request: str) -> dict[str, Any]:
+    """Backward-compatible name for the deterministic parser."""
+
+    return deterministic_intent(request)
+
+
 def parse_request_intent(request: str, args: argparse.Namespace) -> dict[str, Any]:
-    if not should_parse_natural_request(request):
-        return {
-            "target_phrase": request,
-            "selector": None,
-            "parser": "direct_prompt",
-        }
+    deterministic = deterministic_intent(request)
+    if not deterministic["ambiguity_reasons"]:
+        return deterministic
 
     messages = [
         {
@@ -285,6 +378,7 @@ def parse_request_intent(request: str, args: argparse.Namespace) -> dict[str, An
             max_new_tokens=128,
             local_files_only=not args.allow_qwen_downloads,
             device_map=args.qwen_device_map,
+            do_sample=False,
         )
         parsed = first_json_object(parsed_text)
         if parsed is None:
@@ -301,16 +395,22 @@ def parse_request_intent(request: str, args: argparse.Namespace) -> dict[str, An
                 selector = None
         if not target_phrase:
             raise ValueError(f"missing target_phrase in parser output: {parsed!r}")
+        if target_phrase.lower() in {"object", "item", "thing", "it", "this", "that"}:
+            raise ValueError(f"ambiguous target_phrase in parser output: {parsed!r}")
         return {
             "target_phrase": target_phrase,
             "selector": selector,
-            "parser": "qwen_json",
+            "parser": "qwen_json_ambiguity_fallback",
+            "deterministic_ambiguity_reasons": deterministic[
+                "ambiguity_reasons"
+            ],
             "raw_parser_output": parsed_text,
         }
     except Exception as exc:
-        intent = fallback_intent(request)
-        intent["parser_error"] = repr(exc)
-        return intent
+        raise ValueError(
+            "Deterministic parsing was ambiguous and the cached Qwen text parser "
+            f"failed closed: {exc!r}"
+        ) from exc
 
 
 def mask_center_xy(mask: np.ndarray) -> tuple[float, float]:
@@ -455,6 +555,28 @@ def startup(args: argparse.Namespace) -> None:
     STATE["run_dir"] = args.run_dir.expanduser().resolve()
     STATE["run_dir"].mkdir(parents=True, exist_ok=True)
 
+    if args.pipeline_mode == "dino":
+        if args.resolution != "HD720" or args.crop != task5.DEFAULT_CROP:
+            raise ValueError(
+                "DINO mode requires the calibrated HD720 crop "
+                f"{task5.DEFAULT_CROP}; use --pipeline-mode legacy for other views"
+            )
+    STATE["dino"] = None
+    STATE["dino_runtime"] = {
+        "loaded": False,
+        "model_id": args.dino_model,
+        "dtype": "torch.bfloat16",
+        "devices": [grounding_dino.DEFAULT_DEVICE],
+        "configured_device": grounding_dino.DEFAULT_DEVICE,
+        "local_files_only": True,
+        "evaluation_mode": True,
+    }
+    if args.pipeline_mode == "dino" or args.warm_dino:
+        print(f"loading cached Grounding DINO once: {args.dino_model}...")
+        STATE["dino"] = grounding_dino.GroundingDinoAdapter(args.dino_model)
+        STATE["dino_runtime"] = STATE["dino"].runtime_metadata()
+        print(f"Grounding DINO ready: {STATE['dino_runtime']}")
+
     print("loading SAM 3.1 once...")
     STATE["sam"] = task6.MultiplexSam3AgentService(
         checkpoint_path=args.checkpoint,
@@ -480,6 +602,9 @@ def startup(args: argparse.Namespace) -> None:
 
 
 def shutdown() -> None:
+    dino = STATE.pop("dino", None)
+    if dino is not None:
+        dino.close()
     sam = STATE.pop("sam", None)
     if sam is not None:
         sam.close()
@@ -554,26 +679,40 @@ def build_verifier_candidate_records(
         if xs.size == 0:
             raise ValueError(f"Candidate {candidate_id} has an empty mask")
         height, width = mask.shape
-        records.append(
-            {
-                "candidate_id": candidate_id,
-                "sam_index": int(candidate["index"]),
-                "sam_score": float(score),
-                "area_pixels": int(candidate["area_pixels"]),
-                "area_fraction": round(float(mask.mean()), 6),
-                "center_xy_crop_pixels": [
-                    round(float(xs.mean()), 2),
-                    round(float(ys.mean()), 2),
-                ],
-                "bbox_xywh_crop_pixels": [
-                    int(xs.min()),
-                    int(ys.min()),
-                    int(xs.max() - xs.min() + 1),
-                    int(ys.max() - ys.min() + 1),
-                ],
-                "crop_size_wh_pixels": [int(width), int(height)],
-            }
-        )
+        record = {
+            "candidate_id": candidate_id,
+            "sam_index": int(candidate["index"]),
+            "sam_score": float(score),
+            "area_pixels": int(candidate["area_pixels"]),
+            "area_fraction": round(float(mask.mean()), 6),
+            "center_xy_crop_pixels": [
+                round(float(xs.mean()), 2),
+                round(float(ys.mean()), 2),
+            ],
+            "bbox_xywh_crop_pixels": [
+                int(xs.min()),
+                int(ys.min()),
+                int(xs.max() - xs.min() + 1),
+                int(ys.max() - ys.min() + 1),
+            ],
+            "crop_size_wh_pixels": [int(width), int(height)],
+        }
+        provenance = candidate.get("proposal_provenance")
+        if isinstance(provenance, dict):
+            record.update(
+                {
+                    "dino_phrase": provenance.get("dino_phrase"),
+                    "dino_score": provenance.get("dino_score"),
+                    "proposal_box_xyxy_crop_pixels": provenance.get(
+                        "sam_prompt_box_xyxy_crop_pixels"
+                    ),
+                    "dino_box_xyxy_crop_pixels": provenance.get(
+                        "dino_original_box_xyxy_crop_pixels"
+                    ),
+                    "proposal_id": provenance.get("proposal_id"),
+                }
+            )
+        records.append(record)
     return records
 
 
@@ -596,6 +735,9 @@ def verify_candidates_with_qwen(
 ]:
     """Run the fail-closed Qwen visual gate before depth or spatial selection."""
 
+    verification_started = time.monotonic()
+    qwen_call_timings: list[float] = []
+    verification_path = req_dir / f"{artifact_stem}_qwen_verification.json"
     verification: dict[str, Any] = {
         "status": "not_run",
         "decision": None,
@@ -617,6 +759,13 @@ def verify_candidates_with_qwen(
         "attempts": [],
     }
     if not kept:
+        verification["inference_s"] = 0.0
+        verification["elapsed_s"] = float(time.monotonic() - verification_started)
+        verification["artifact"] = str(verification_path)
+        verification_path.write_text(
+            json.dumps(verification, indent=2) + "\n",
+            encoding="utf-8",
+        )
         return kept, candidates, verification
 
     try:
@@ -640,15 +789,19 @@ def verify_candidates_with_qwen(
         )
 
         def send_generate_request(messages: list[dict[str, Any]]) -> str:
-            return local_qwen.qwen_generate(
-                messages,
-                model_id=args.qwen_model,
-                max_new_tokens=args.verifier_max_new_tokens,
-                local_files_only=not args.allow_qwen_downloads,
-                device_map=args.qwen_device_map,
-                do_sample=False,
-                response_prefix='{"decision":',
-            )
+            qwen_started = time.monotonic()
+            try:
+                return local_qwen.qwen_generate(
+                    messages,
+                    model_id=args.qwen_model,
+                    max_new_tokens=args.verifier_max_new_tokens,
+                    local_files_only=not args.allow_qwen_downloads,
+                    device_map=args.qwen_device_map,
+                    do_sample=False,
+                    response_prefix='{"decision":',
+                )
+            finally:
+                qwen_call_timings.append(time.monotonic() - qwen_started)
 
         verification = candidate_verifier.run_visual_verifier(
             request=request,
@@ -701,27 +854,23 @@ def verify_candidates_with_qwen(
         )
     )
     verification["selected_sam_indices"] = selected_sam_indices
+    verification["inference_s"] = float(sum(qwen_call_timings))
+    verification["call_timings_s"] = [float(value) for value in qwen_call_timings]
+    verification["elapsed_s"] = float(time.monotonic() - verification_started)
+    verification["artifact"] = str(verification_path)
+    verification_path.write_text(
+        json.dumps(verification, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return kept, candidates, verification
 
 
-def direct_segment(
-    *,
-    request: str,
-    rgb_np: np.ndarray,
-    depth_np: np.ndarray,
-    frame_path: Path,
-    req_dir: Path,
+def decode_and_gate_sam_outputs(
+    outputs: dict[str, Any],
     args: argparse.Namespace,
-) -> dict[str, Any]:
-    intent = parse_request_intent(request, args)
-    sam_prompt = intent["target_phrase"]
-    selector = intent.get("selector")
-    sam_json = STATE["sam"](
-        image_path=str(frame_path),
-        text_prompt=sam_prompt,
-        output_folder_path=str(req_dir / "direct"),
-    )
-    outputs = read_json(sam_json)
+) -> tuple[list[tuple[np.ndarray, float]], list[dict[str, Any]]]:
+    """Decode SAM JSON and preserve optional DINO provenance by array index."""
+
     masks = task6.decode_agent_masks(outputs)
     scores = np.asarray(outputs.get("pred_scores", []), dtype=np.float32)
     kept, candidates = task2.gate_masks(
@@ -730,7 +879,260 @@ def direct_segment(
         conf_thresh=args.presence_conf_threshold,
         min_area=args.min_area,
     )
+    provenance = outputs.get("proposal_provenance", [])
+    if provenance:
+        if len(provenance) != len(candidates):
+            raise ValueError(
+                "SAM proposal provenance is not index-compatible with masks"
+            )
+        candidates = [
+            {**candidate, "proposal_provenance": dict(provenance[index])}
+            for index, candidate in enumerate(candidates)
+        ]
+    return kept, candidates
+
+
+def cap_verifier_candidates(
+    kept: list[tuple[np.ndarray, float]],
+    candidates: list[dict[str, Any]],
+    maximum: int = grounding_dino.DEFAULT_MAX_PROPOSALS,
+) -> tuple[list[tuple[np.ndarray, float]], list[dict[str, Any]]]:
+    """Bound Qwen input while preserving SAM indices and existing order."""
+
+    if len(kept) <= maximum:
+        return kept, candidates
+    kept_candidates = [candidate for candidate in candidates if candidate["kept"]]
+    retained_indices = {
+        int(candidate["index"]) for candidate in kept_candidates[:maximum]
+    }
+    updated = []
+    for candidate_value in candidates:
+        candidate = dict(candidate_value)
+        if candidate["kept"] and int(candidate["index"]) not in retained_indices:
+            candidate["kept"] = False
+            candidate["reject_reasons"] = list(candidate["reject_reasons"]) + [
+                "verifier_candidate_limit"
+            ]
+        updated.append(candidate)
+    return kept[:maximum], updated
+
+
+def legacy_candidate_generation(
+    *,
+    sam_prompt: str,
+    frame_path: Path,
+    req_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    sam_json = STATE["sam"](
+        image_path=str(frame_path),
+        text_prompt=sam_prompt,
+        output_folder_path=str(req_dir / "legacy_sam"),
+    )
+    elapsed_s = time.monotonic() - started
+    outputs = read_json(sam_json)
+    kept, candidates = decode_and_gate_sam_outputs(outputs, args)
+    return {
+        "kept": kept,
+        "candidates": candidates,
+        "sam_json": sam_json,
+        "outputs": outputs,
+        "elapsed_s": float(elapsed_s),
+    }
+
+
+def dino_candidate_generation(
+    *,
+    target_phrase: str,
+    rgb_np: np.ndarray,
+    frame_path: Path,
+    req_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Run exactly one DINO pass and at most three SAM box prompts."""
+
+    expected_height = int(task5.DEFAULT_CROP[3])
+    expected_width = int(task5.DEFAULT_CROP[2])
+    if rgb_np.shape[:2] != (expected_height, expected_width):
+        raise ValueError(
+            "DINO received an image outside the calibrated 384x360 crop: "
+            f"{rgb_np.shape[:2]}"
+        )
+    detector = STATE.get("dino")
+    if detector is None:
+        raise RuntimeError("Grounding DINO is not loaded")
+
+    phrases = grounding_dino.build_phrase_family(target_phrase)
+    dino_started = time.monotonic()
+    raw_result = detector.detect(
+        rgb_np,
+        phrases,
+        box_threshold=args.dino_box_threshold,
+        text_threshold=args.dino_text_threshold,
+    )
+    dino_elapsed_s = time.monotonic() - dino_started
+    if not isinstance(raw_result, dict) or not isinstance(
+        raw_result.get("detections"), list
+    ):
+        raise grounding_dino.GroundingDinoOutputError(
+            "DINO adapter returned malformed detections"
+        )
+    proposals, rejected = grounding_dino.prepare_proposals(
+        raw_result["detections"],
+        image_width=expected_width,
+        image_height=expected_height,
+        box_threshold=args.dino_box_threshold,
+        nms_iou=args.dino_nms_iou,
+        max_proposals=args.dino_max_proposals,
+        padding_fraction=args.dino_box_padding,
+        dino_inference_s=raw_result.get("inference_s", dino_elapsed_s),
+    )
+    proposal_path = req_dir / "dino_proposals.json"
+    proposal_manifest = {
+        "model_id": args.dino_model,
+        "local_files_only": True,
+        "crop_xywh_full_pixels": [int(value) for value in task5.DEFAULT_CROP],
+        "crop_size_wh_pixels": [expected_width, expected_height],
+        "phrases": phrases,
+        "thresholds": {
+            "box": float(args.dino_box_threshold),
+            "text": float(args.dino_text_threshold),
+            "cross_phrase_nms_iou": float(args.dino_nms_iou),
+            "box_padding_fraction": float(args.dino_box_padding),
+            "max_proposals": int(args.dino_max_proposals),
+        },
+        "timing_s": {
+            "adapter_total": float(raw_result.get("total_s", dino_elapsed_s)),
+            "model_inference": float(
+                raw_result.get("inference_s", dino_elapsed_s)
+            ),
+            "service_stage": float(dino_elapsed_s),
+        },
+        "raw_detections": raw_result["detections"],
+        "proposals": proposals,
+        "rejected": rejected,
+    }
+    proposal_path.write_text(
+        json.dumps(proposal_manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    if not proposals:
+        return {
+            "kept": [],
+            "candidates": [],
+            "sam_json": None,
+            "combined_candidates": None,
+            "outputs": None,
+            "phrases": phrases,
+            "proposals": proposals,
+            "proposal_manifest": str(proposal_path),
+            "dino_elapsed_s": float(dino_elapsed_s),
+            "sam_box_prompt_timings": [],
+            "sam_box_elapsed_s": 0.0,
+        }
+
+    sam_started = time.monotonic()
+    sam_json = STATE["sam"].segment_boxes(
+        image_path=str(frame_path),
+        proposals=proposals,
+        output_folder_path=str(req_dir / "dino_sam"),
+    )
+    sam_elapsed_s = time.monotonic() - sam_started
+    outputs = read_json(sam_json)
+    if (
+        int(outputs.get("orig_img_w", -1)) != expected_width
+        or int(outputs.get("orig_img_h", -1)) != expected_height
+    ):
+        raise ValueError("Combined SAM candidates are not crop-local 384x360 data")
+    kept, candidates = decode_and_gate_sam_outputs(outputs, args)
+    return {
+        "kept": kept,
+        "candidates": candidates,
+        "sam_json": sam_json,
+        "combined_candidates": sam_json,
+        "outputs": outputs,
+        "phrases": phrases,
+        "proposals": proposals,
+        "proposal_manifest": str(proposal_path),
+        "dino_elapsed_s": float(dino_elapsed_s),
+        "sam_box_prompt_timings": list(
+            outputs.get("sam_box_prompt_timings", [])
+        ),
+        "sam_box_elapsed_s": float(sam_elapsed_s),
+    }
+
+
+def direct_segment(
+    *,
+    request: str,
+    intent: dict[str, Any],
+    rgb_np: np.ndarray,
+    depth_np: np.ndarray,
+    frame_path: Path,
+    req_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    sam_prompt = intent["target_phrase"]
+    selector = intent.get("selector")
+    stage_timings: dict[str, Any] = {
+        "grounding_dino_s": 0.0,
+        "sam_box_prompts_s": 0.0,
+        "sam_box_prompt_timings": [],
+        "legacy_sam_s": 0.0,
+    }
+    dino_generation = None
+    legacy_fallback_reason = None
+
+    if args.pipeline_mode == "dino":
+        dino_generation = dino_candidate_generation(
+            target_phrase=sam_prompt,
+            rgb_np=rgb_np,
+            frame_path=frame_path,
+            req_dir=req_dir,
+            args=args,
+        )
+        stage_timings["grounding_dino_s"] = dino_generation[
+            "dino_elapsed_s"
+        ]
+        stage_timings["sam_box_prompts_s"] = dino_generation[
+            "sam_box_elapsed_s"
+        ]
+        stage_timings["sam_box_prompt_timings"] = dino_generation[
+            "sam_box_prompt_timings"
+        ]
+        generation = dino_generation
+        source_used = "dino_sam_boxes"
+        if not generation["kept"]:
+            legacy_fallback_reason = (
+                "no_valid_dino_proposals"
+                if not generation["proposals"]
+                else "no_score_area_gated_sam_box_masks"
+            )
+            generation = legacy_candidate_generation(
+                sam_prompt=sam_prompt,
+                frame_path=frame_path,
+                req_dir=req_dir,
+                args=args,
+            )
+            stage_timings["legacy_sam_s"] = generation["elapsed_s"]
+            source_used = "legacy_text_fallback"
+    else:
+        generation = legacy_candidate_generation(
+            sam_prompt=sam_prompt,
+            frame_path=frame_path,
+            req_dir=req_dir,
+            args=args,
+        )
+        stage_timings["legacy_sam_s"] = generation["elapsed_s"]
+        source_used = "legacy_text"
+
+    kept = generation["kept"]
+    candidates = generation["candidates"]
+    kept, candidates = cap_verifier_candidates(kept, candidates)
     fallback_eligible = len(kept) == 0
+    artifact_stem = "dino" if source_used == "dino_sam_boxes" else "legacy"
     kept, candidates, verification = verify_candidates_with_qwen(
         request=request,
         target_phrase=sam_prompt,
@@ -738,11 +1140,14 @@ def direct_segment(
         rgb_np=rgb_np,
         frame_path=frame_path,
         req_dir=req_dir,
-        artifact_stem="direct",
+        artifact_stem=artifact_stem,
         kept=kept,
         candidates=candidates,
         args=args,
     )
+    stage_timings["qwen_s"] = float(verification.get("inference_s", 0.0))
+    stage_timings["qwen_stage_s"] = float(verification.get("elapsed_s", 0.0))
+    selection_started = time.monotonic()
     kept, candidates, selection = select_spatial_mask(
         kept,
         candidates,
@@ -751,27 +1156,63 @@ def direct_segment(
         min_valid_depth_fraction=args.selection_min_valid_depth_fraction,
         selection_roi=args.selection_roi,
     )
+    stage_timings["spatial_selection_s"] = float(
+        time.monotonic() - selection_started
+    )
     overlay = task2.overlay_masks(
         rgb_np,
         kept,
         request,
-        req_dir / "overlay_direct.png",
+        req_dir / f"overlay_{artifact_stem}.png",
     )
+    proposal_provenance = []
+    if source_used == "dino_sam_boxes" and generation.get("outputs"):
+        proposal_provenance = list(
+            generation["outputs"].get("proposal_provenance", [])
+        )
+    candidate_generation = {
+        "configured_pipeline_mode": args.pipeline_mode,
+        "source_used": source_used,
+        "legacy_fallback_reason": legacy_fallback_reason,
+        "dino_proposals_json": None
+        if dino_generation is None
+        else dino_generation["proposal_manifest"],
+        "combined_candidates_json": None
+        if dino_generation is None
+        else dino_generation["combined_candidates"],
+        "phrases": [sam_prompt]
+        if dino_generation is None
+        else dino_generation["phrases"],
+        "proposals": []
+        if dino_generation is None
+        else dino_generation["proposals"],
+    }
+    path_prefix = {
+        "dino_sam_boxes": "dino_sam",
+        "legacy_text_fallback": "dino_legacy_fallback",
+        "legacy_text": "legacy",
+    }[source_used]
     return {
-        "path": "direct_verified_spatial"
+        "path": f"{path_prefix}_verified_spatial"
         if selection is not None
-        else "direct_verified",
+        else f"{path_prefix}_verified",
         "kept": kept,
         "presence_gate": summarize_kept(kept=kept, candidates=candidates, args=args),
-        "sam_json": sam_json,
+        "sam_json": generation["sam_json"],
+        "combined_candidates": candidate_generation["combined_candidates_json"],
+        "dino_proposals": candidate_generation["dino_proposals_json"],
         "overlay": overlay,
         "candidate_overlay": verification.get("candidate_overlay"),
         "candidate_zoom": verification.get("candidate_zoom"),
         "agent_render_output": None,
         "sam_prompt": sam_prompt,
+        "sam_prompts": candidate_generation["phrases"],
         "selection": selection,
         "intent": intent,
         "verification": verification,
+        "candidate_generation": candidate_generation,
+        "proposal_provenance": proposal_provenance,
+        "stage_timings": stage_timings,
         "fallback_eligible": fallback_eligible,
     }
 
@@ -788,6 +1229,7 @@ def agent_fallback_segment(
 ) -> dict[str, Any]:
     agent_dir = req_dir / "agent_workspace"
     agent_dir.mkdir(parents=True, exist_ok=True)
+    agent_started = time.monotonic()
     history, final_outputs, rendered_final = task6.agent_inference(
         str(frame_path),
         request,
@@ -797,6 +1239,7 @@ def agent_fallback_segment(
         max_generations=args.max_generations,
         output_dir=str(agent_dir),
     )
+    agent_elapsed_s = time.monotonic() - agent_started
     agent_render_output = req_dir / "agent_render.png"
     rendered_final.save(agent_render_output)
 
@@ -808,6 +1251,7 @@ def agent_fallback_segment(
         conf_thresh=args.presence_conf_threshold,
         min_area=args.min_area,
     )
+    kept, candidates = cap_verifier_candidates(kept, candidates)
     target_phrase = intent["target_phrase"]
     selector = intent.get("selector")
     kept, candidates, verification = verify_candidates_with_qwen(
@@ -822,6 +1266,7 @@ def agent_fallback_segment(
         candidates=candidates,
         args=args,
     )
+    selection_started = time.monotonic()
     kept, candidates, selection = select_spatial_mask(
         kept,
         candidates,
@@ -830,6 +1275,7 @@ def agent_fallback_segment(
         min_valid_depth_fraction=args.selection_min_valid_depth_fraction,
         selection_roi=args.selection_roi,
     )
+    selection_elapsed_s = time.monotonic() - selection_started
     overlay = task2.overlay_masks(
         rgb_np,
         kept,
@@ -851,30 +1297,125 @@ def agent_fallback_segment(
         "kept": kept,
         "presence_gate": summarize_kept(kept=kept, candidates=candidates, args=args),
         "sam_json": str(final_outputs_path),
+        "combined_candidates": None,
+        "dino_proposals": None,
         "overlay": overlay,
         "candidate_overlay": verification.get("candidate_overlay"),
         "candidate_zoom": verification.get("candidate_zoom"),
         "agent_render_output": str(agent_render_output),
         "agent_history": str(history_path),
         "sam_prompt": target_phrase,
+        "sam_prompts": [target_phrase],
         "selection": selection,
         "intent": {**intent, "fallback": "agent"},
         "verification": verification,
+        "candidate_generation": {
+            "configured_pipeline_mode": args.pipeline_mode,
+            "source_used": "agent_fallback",
+            "legacy_fallback_reason": None,
+            "dino_proposals_json": None,
+            "combined_candidates_json": None,
+            "phrases": [target_phrase],
+            "proposals": [],
+        },
+        "proposal_provenance": [],
+        "stage_timings": {
+            "agent_s": float(agent_elapsed_s),
+            "qwen_s": float(verification.get("inference_s", 0.0)),
+            "qwen_stage_s": float(verification.get("elapsed_s", 0.0)),
+            "spatial_selection_s": float(selection_elapsed_s),
+        },
         "fallback_eligible": False,
     }
 
 
-def segment_once(request: str, *, use_agent_fallback: bool = True) -> dict[str, Any]:
+def build_selected_mask_record(
+    kept: list[tuple[np.ndarray, float]],
+    presence_gate: dict[str, Any],
+    frame_info: dict[str, Any],
+    proposal_provenance: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Describe the single selected crop mask and its full-camera translation."""
+
+    kept_indices = presence_gate.get("kept_indices", [])
+    if len(kept) != 1 or len(kept_indices) != 1:
+        return None
+    mask, score = kept[0]
+    ys, xs = np.where(mask)
+    if xs.size == 0:
+        return None
+    bbox = [
+        int(xs.min()),
+        int(ys.min()),
+        int(xs.max() - xs.min() + 1),
+        int(ys.max() - ys.min() + 1),
+    ]
+    # Match the historical ROS fallback, which derives the target pixel from
+    # the normalized SAM bounding-box center rather than the mask centroid.
+    center = [
+        float(bbox[0] + bbox[2] / 2.0),
+        float(bbox[1] + bbox[3] / 2.0),
+    ]
+    crop_info = frame_info.get("crop", {})
+    if crop_info.get("enabled"):
+        applied = crop_info.get("applied_xyxy")
+        if not isinstance(applied, list) or len(applied) != 4:
+            raise ValueError("Enabled crop is missing applied_xyxy metadata")
+        crop_xywh = [
+            int(applied[0]),
+            int(applied[1]),
+            int(applied[2]) - int(applied[0]),
+            int(applied[3]) - int(applied[1]),
+        ]
+    else:
+        crop_xywh = None
+    full_center = grounding_dino.crop_point_to_full(center, crop_xywh)
+    offset_x = 0 if crop_xywh is None else crop_xywh[0]
+    offset_y = 0 if crop_xywh is None else crop_xywh[1]
+    sam_index = int(kept_indices[0])
+    provenance = next(
+        (
+            item
+            for item in proposal_provenance
+            if int(item.get("candidate_index", -1)) == sam_index
+        ),
+        None,
+    )
+    return {
+        "sam_index": sam_index,
+        "score": float(score),
+        "bbox_xywh_crop_pixels": bbox,
+        "bbox_xywh_full_pixels": [
+            bbox[0] + offset_x,
+            bbox[1] + offset_y,
+            bbox[2],
+            bbox[3],
+        ],
+        "bbox_xywh_normalized": grounding_dino.mask_bbox_xywh_normalized(mask),
+        "center_xy_crop_pixels": center,
+        "center_xy_full_pixels": full_center,
+        "crop_to_full_offset_xy_pixels": [offset_x, offset_y],
+        "proposal_provenance": provenance,
+    }
+
+
+def segment_once(request: str, *, use_agent_fallback: bool = False) -> dict[str, Any]:
     args = STATE["args"]
     req_dir = STATE["run_dir"] / timestamp_slug()
     req_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.monotonic()
+    capture_started = time.monotonic()
     rgb_np, depth_np, xyz_np, frame_info = capture_request_frame(req_dir)
+    capture_elapsed_s = time.monotonic() - capture_started
     frame_path = Path(frame_info["saved_frame"])
 
+    parsing_started = time.monotonic()
+    intent = parse_request_intent(request, args)
+    parsing_elapsed_s = time.monotonic() - parsing_started
     result = direct_segment(
         request=request,
+        intent=intent,
         rgb_np=rgb_np,
         depth_np=depth_np,
         frame_path=frame_path,
@@ -882,7 +1423,10 @@ def segment_once(request: str, *, use_agent_fallback: bool = True) -> dict[str, 
         args=args,
     )
     if result["fallback_eligible"] and use_agent_fallback:
-        direct_intent = result["intent"]
+        bounded_candidate_generation = result.get("candidate_generation")
+        bounded_stage_timings = dict(result.get("stage_timings", {}))
+        bounded_dino_proposals = result.get("dino_proposals")
+        bounded_combined_candidates = result.get("combined_candidates")
         result = agent_fallback_segment(
             request=request,
             rgb_np=rgb_np,
@@ -890,11 +1434,27 @@ def segment_once(request: str, *, use_agent_fallback: bool = True) -> dict[str, 
             frame_path=frame_path,
             req_dir=req_dir,
             args=args,
-            intent=direct_intent,
+            intent=intent,
         )
+        result["candidate_generation"]["bounded_attempt"] = (
+            bounded_candidate_generation
+        )
+        result["candidate_generation"]["dino_proposals_json"] = (
+            bounded_dino_proposals
+        )
+        result["candidate_generation"]["combined_candidates_json"] = (
+            bounded_combined_candidates
+        )
+        result["dino_proposals"] = bounded_dino_proposals
+        result["combined_candidates"] = bounded_combined_candidates
+        result["stage_timings"] = {
+            **bounded_stage_timings,
+            **result.get("stage_timings", {}),
+        }
 
     kept = result.pop("kept")
     result.pop("fallback_eligible", None)
+    depth_started = time.monotonic()
     object_depth = task5.object_depth_report(
         kept,
         depth_np=depth_np,
@@ -903,8 +1463,25 @@ def segment_once(request: str, *, use_agent_fallback: bool = True) -> dict[str, 
         depth_measure=frame_info["depth_measure"],
         xyz_measure=frame_info["xyz_measure"],
     )
+    depth_elapsed_s = time.monotonic() - depth_started
+    stage_timings = {
+        "capture_s": float(capture_elapsed_s),
+        "parsing_s": float(parsing_elapsed_s),
+        **result.get("stage_timings", {}),
+        "depth_s": float(depth_elapsed_s),
+    }
+    proposal_provenance = list(result.get("proposal_provenance", []))
+    selected_mask = build_selected_mask_record(
+        kept,
+        result["presence_gate"],
+        frame_info,
+        proposal_provenance,
+    )
+    total_elapsed_s = time.monotonic() - t0
+    stage_timings["total_s"] = float(total_elapsed_s)
     response = {
         "request": request,
+        "pipeline_mode": args.pipeline_mode,
         "path": result["path"],
         "num_kept": result["presence_gate"]["num_kept"],
         "scores": [float(score) for _, score in kept],
@@ -916,20 +1493,28 @@ def segment_once(request: str, *, use_agent_fallback: bool = True) -> dict[str, 
         "candidate_overlay": result.get("candidate_overlay"),
         "candidate_zoom": result.get("candidate_zoom"),
         "sam_json": result["sam_json"],
+        "combined_candidates": result.get("combined_candidates"),
+        "dino_proposals": result.get("dino_proposals"),
         "agent_render_output": result.get("agent_render_output"),
         "sam_prompt": result.get("sam_prompt", request),
+        "sam_prompts": result.get("sam_prompts", [result.get("sam_prompt", request)]),
         "selection": result.get("selection"),
         "intent": result.get("intent"),
         "verification": result.get("verification"),
-        "elapsed_s": round(time.monotonic() - t0, 2),
+        "candidate_generation": result.get("candidate_generation"),
+        "proposal_provenance": proposal_provenance,
+        "selected_mask": selected_mask,
+        "stage_timings": stage_timings,
+        "agent_fallback_explicitly_requested": bool(use_agent_fallback),
+        "elapsed_s": round(total_elapsed_s, 2),
         "output_dir": str(req_dir),
     }
     if result.get("agent_history") is not None:
         response["agent_history"] = result["agent_history"]
 
     result_path = req_dir / "result.json"
-    result_path.write_text(json.dumps(response, indent=2) + "\n", encoding="utf-8")
     response["result_json"] = str(result_path)
+    result_path.write_text(json.dumps(response, indent=2) + "\n", encoding="utf-8")
     return response
 
 
@@ -943,12 +1528,35 @@ if app is not None:
             "camera_open": "zed" in STATE,
             "busy": LOCK.locked(),
             "uptime_s": round(time.monotonic() - STATE.get("t0", time.monotonic()), 1),
+            "pipeline_mode": None if args is None else args.pipeline_mode,
             "crop_xywh": None
             if args is None or args.crop is None
             else [int(value) for value in args.crop],
             "qwen_model": None if args is None else args.qwen_model,
             "qwen_loaded": STATE.get("qwen_runtime") is not None,
             "qwen_runtime": STATE.get("qwen_runtime"),
+            "grounding_dino": None
+            if args is None
+            else {
+                **STATE.get(
+                    "dino_runtime",
+                    {
+                        "loaded": False,
+                        "model_id": args.dino_model,
+                        "dtype": "torch.bfloat16",
+                        "devices": [grounding_dino.DEFAULT_DEVICE],
+                        "local_files_only": True,
+                    },
+                ),
+                "box_threshold": float(args.dino_box_threshold),
+                "text_threshold": float(args.dino_text_threshold),
+                "nms_iou": float(args.dino_nms_iou),
+                "max_proposals": int(args.dino_max_proposals),
+                "box_padding_fraction": float(args.dino_box_padding),
+                "calibrated_crop_xywh": [
+                    int(value) for value in task5.DEFAULT_CROP
+                ],
+            },
             "qwen_verifier": None
             if args is None
             else {
@@ -960,7 +1568,7 @@ if app is not None:
         }
 
     @app.post("/segment")
-    def segment(request: str, use_agent_fallback: bool = True) -> dict[str, Any]:
+    def segment(request: str, use_agent_fallback: bool = False) -> dict[str, Any]:
         if not request.strip():
             raise HTTPException(status_code=400, detail="request must not be empty")
         with LOCK:

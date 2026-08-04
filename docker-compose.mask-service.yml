@@ -18,6 +18,8 @@ services:
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_DISABLE_TELEMETRY=1
+      - GROUNDING_DINO_MODEL_ID=IDEA-Research/grounding-dino-base
+      - GROUNDING_DINO_DEVICE=cuda:0
       - SAM3_AGENT_QWEN_MODEL_ID=Qwen/Qwen2.5-VL-7B-Instruct
       - SAM3_AGENT_QWEN_LOCAL_ONLY=1
       - SAM3_AGENT_QWEN_DEVICE_MAP=auto
@@ -42,7 +44,7 @@ services:
     working_dir: /home/team/VLA_Model_Work/SAM_3_implementation
     command: >
       bash -lc '
-        exec .venv/bin/python -u scripts/mask_service.py --host 127.0.0.1 --port 8765 --warm-qwen
+        exec .venv/bin/python -u scripts/mask_service.py --host 127.0.0.1 --port 8765 --pipeline-mode dino --warm-dino --warm-qwen
       '
     healthcheck:
       test:
@@ -52,7 +54,10 @@ services:
         - >-
           import json, urllib.request;
           data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5));
-          assert data.get('qwen_loaded') and data.get('qwen_model') == 'Qwen/Qwen2.5-VL-7B-Instruct'
+          assert data.get('qwen_loaded') and data.get('qwen_model') == 'Qwen/Qwen2.5-VL-7B-Instruct';
+          assert data.get('pipeline_mode') == 'dino';
+          assert data.get('grounding_dino', {}).get('loaded');
+          assert data.get('grounding_dino', {}).get('model_id') == 'IDEA-Research/grounding-dino-base'
       interval: 15s
       timeout: 10s
       retries: 20
