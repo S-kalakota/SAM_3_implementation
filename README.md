@@ -2,6 +2,23 @@
 
 ## Quick start
 
+Two resident perception modes are retained in this branch:
+
+- `./sam3` runs the current versioned v1/v2 service without Grounding DINO.
+- `./sam3-dino` runs the bounded Grounding DINO proposal service. It uses the
+  same cached SAM/Qwen models, ZED camera, port `8765`, and output contracts, so
+  the two launchers must be run sequentially.
+
+Run the bounded DINO path with:
+
+```bash
+./sam3-dino "pick up the orange and grey box"
+./sam3-dino stop
+```
+
+See `GROUNDING_DINO_PIPELINE.md` for its proposal thresholds, artifacts, and
+validation gates.
+
 From this directory, submit an instruction with one command:
 
 ```bash
