@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - exercised only before deps are install
 
 import local_qwen
 import grounding_dino
+import grounding_intent
 import mask_depth
 import qwen_candidate_verifier as candidate_verifier
 import task2_sam31_image_prompt as task2
@@ -247,6 +248,14 @@ VALID_SELECTORS = {
     "smallest",
 }
 
+V1_SEGMENT_REQUEST_KEYS = {
+    "schema_version",
+    "source_phrase",
+    "grounding_intent",
+    "intent_hash",
+    "use_agent_fallback",
+}
+
 SELECTOR_PATTERNS = (
     ("rightmost", r"\bright\s*most\b|\brightmost\b|\bon the right\b|\bright side\b"),
     ("leftmost", r"\bleft\s*most\b|\bleftmost\b|\bon the left\b|\bleft side\b"),
@@ -268,6 +277,85 @@ def first_json_object(text: str) -> dict[str, Any] | None:
         if isinstance(value, dict):
             return value
     return None
+
+
+def validate_v1_segment_request(payload: Any) -> dict[str, Any]:
+    """Validate the robot bridge's exact request before camera capture."""
+
+    if not isinstance(payload, dict):
+        raise grounding_intent.GroundingIntentError(
+            "v1 request must be a JSON object"
+        )
+    keys = set(payload)
+    if keys != V1_SEGMENT_REQUEST_KEYS:
+        raise grounding_intent.GroundingIntentError(
+            "v1 request keys are invalid",
+            details={
+                "missing": sorted(V1_SEGMENT_REQUEST_KEYS - keys),
+                "extra": sorted(keys - V1_SEGMENT_REQUEST_KEYS),
+            },
+        )
+    if (
+        isinstance(payload["schema_version"], bool)
+        or payload["schema_version"] != grounding_intent.SCHEMA_VERSION
+    ):
+        raise grounding_intent.GroundingIntentError(
+            "v1 request schema_version must be 1"
+        )
+    source_phrase = payload["source_phrase"]
+    if not isinstance(source_phrase, str) or not source_phrase.strip():
+        raise grounding_intent.GroundingIntentError(
+            "source_phrase must be non-empty"
+        )
+    if not isinstance(payload["use_agent_fallback"], bool):
+        raise grounding_intent.GroundingIntentError(
+            "use_agent_fallback must be boolean"
+        )
+    canonical = grounding_intent.validate_grounding_intent(
+        payload["grounding_intent"],
+        expected_source_phrase=source_phrase,
+    )
+    supplied_hash = payload["intent_hash"]
+    canonical_hash = grounding_intent.intent_hash(canonical)
+    if not isinstance(supplied_hash, str) or supplied_hash != canonical_hash:
+        raise grounding_intent.GroundingIntentError(
+            "intent_hash does not match grounding_intent",
+            code="grounding_identity_mismatch",
+            details={"supplied": supplied_hash, "computed": canonical_hash},
+        )
+    return {
+        "source_phrase": grounding_intent.collapse_space(source_phrase),
+        "grounding_intent": canonical,
+        "intent_hash": supplied_hash,
+        "use_agent_fallback": payload["use_agent_fallback"],
+    }
+
+
+def build_v1_pipeline_intent(canonical_intent: dict[str, Any]) -> dict[str, Any]:
+    """Adapt a sealed v1 intent to the bounded DINO/SAM/Qwen pipeline."""
+
+    canonical = grounding_intent.validate_grounding_intent(canonical_intent)
+    unsupported: dict[str, Any] = {}
+    if canonical["source_region"] is not None:
+        unsupported["source_region"] = canonical["source_region"]
+    if canonical["relations"]:
+        unsupported["relations"] = canonical["relations"]
+    if unsupported:
+        raise grounding_intent.GroundingIntentError(
+            "the Grounding DINO v1 path does not yet implement source-region "
+            "or relational selection",
+            code="unsupported_grounding_intent",
+            details=unsupported,
+        )
+    return {
+        "target_phrase": grounding_intent.construct_primary_prompt(canonical),
+        "selector": canonical["selector"],
+        "parser": "validated_grounding_intent_v1",
+        "ambiguity_reasons": [],
+        "relation_context": None,
+        "grounding_intent": canonical,
+        "intent_hash": grounding_intent.intent_hash(canonical),
+    }
 
 
 def should_parse_natural_request(request: str) -> bool:
@@ -769,6 +857,7 @@ def verify_candidates_with_qwen(
         "candidate_clean_crops": None,
         "candidate_manifest": None,
         "verifier_input_mode": None,
+        "json_schema_constrained": False,
         "attempts": [],
     }
     if not kept:
@@ -818,6 +907,14 @@ def verify_candidates_with_qwen(
             encoding="utf-8",
         )
 
+        identity_schema = (
+            candidate_verifier.identity_verifier_json_schema(
+                len(candidate_records)
+            )
+            if candidate_clean_crops is not None
+            else None
+        )
+
         def send_generate_request(messages: list[dict[str, Any]]) -> str:
             qwen_started = time.monotonic()
             try:
@@ -828,7 +925,10 @@ def verify_candidates_with_qwen(
                     local_files_only=not args.allow_qwen_downloads,
                     device_map=args.qwen_device_map,
                     do_sample=False,
-                    response_prefix='{"decision":',
+                    response_prefix=(
+                        '{"decision":' if identity_schema is None else None
+                    ),
+                    json_schema=identity_schema,
                 )
             finally:
                 qwen_call_timings.append(time.monotonic() - qwen_started)
@@ -879,6 +979,7 @@ def verify_candidates_with_qwen(
                 else candidate_clean_crops["output"],
                 "candidate_manifest": str(manifest_path),
                 "verifier_input_mode": verifier_input_mode,
+                "json_schema_constrained": identity_schema is not None,
             }
         )
     except Exception as exc:
@@ -1810,10 +1911,60 @@ def build_selected_mask_record(
     }
 
 
-def segment_once(request: str, *, use_agent_fallback: bool = False) -> dict[str, Any]:
+def segment_once(
+    request: str,
+    *,
+    use_agent_fallback: bool = False,
+    supplied_intent: dict[str, Any] | None = None,
+    supplied_intent_hash: str | None = None,
+) -> dict[str, Any]:
     args = STATE["args"]
+    canonical_intent = None
+    pipeline_intent = None
+    canonical_hash = None
+    if supplied_intent is not None:
+        canonical_intent = grounding_intent.validate_grounding_intent(
+            supplied_intent,
+            expected_source_phrase=request,
+        )
+        canonical_hash = grounding_intent.intent_hash(canonical_intent)
+        if supplied_intent_hash != canonical_hash:
+            raise grounding_intent.GroundingIntentError(
+                "supplied intent hash does not match the canonical intent",
+                code="grounding_identity_mismatch",
+                details={
+                    "supplied": supplied_intent_hash,
+                    "computed": canonical_hash,
+                },
+            )
+        # Build this before touching the camera so unsupported semantics fail
+        # without producing a fresh frame or a partially trusted target.
+        pipeline_intent = build_v1_pipeline_intent(canonical_intent)
+    elif supplied_intent_hash is not None:
+        raise grounding_intent.GroundingIntentError(
+            "an intent hash was supplied without a grounding intent",
+            code="grounding_identity_mismatch",
+        )
+
     req_dir = STATE["run_dir"] / timestamp_slug()
     req_dir.mkdir(parents=True, exist_ok=True)
+
+    intent_path = None
+    if canonical_intent is not None:
+        intent_path = req_dir / "grounding_intent.json"
+        intent_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": grounding_intent.SCHEMA_VERSION,
+                    "grounding_intent": canonical_intent,
+                    "intent_hash": canonical_hash,
+                    "pipeline_intent": pipeline_intent,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     t0 = time.monotonic()
     capture_started = time.monotonic()
@@ -1822,7 +1973,11 @@ def segment_once(request: str, *, use_agent_fallback: bool = False) -> dict[str,
     frame_path = Path(frame_info["saved_frame"])
 
     parsing_started = time.monotonic()
-    intent = parse_request_intent(request, args)
+    intent = (
+        pipeline_intent
+        if pipeline_intent is not None
+        else parse_request_intent(request, args)
+    )
     parsing_elapsed_s = time.monotonic() - parsing_started
     result = direct_segment(
         request=request,
@@ -1922,6 +2077,23 @@ def segment_once(request: str, *, use_agent_fallback: bool = False) -> dict[str,
         "elapsed_s": round(total_elapsed_s, 2),
         "output_dir": str(req_dir),
     }
+    if canonical_intent is not None:
+        response.update(
+            {
+                "schema_version": grounding_intent.SCHEMA_VERSION,
+                "grounding_intent": canonical_intent,
+                "intent_hash": canonical_hash,
+                "intent_parser": {
+                    "mode": "supplied_v1",
+                    "active_parser": "validated_request_intent",
+                },
+                "intent_record": str(intent_path),
+                "primary_sam_phrase": pipeline_intent["target_phrase"],
+                "prompt_family": grounding_dino.build_phrase_family(
+                    pipeline_intent["target_phrase"]
+                ),
+            }
+        )
     if result.get("agent_history") is not None:
         response["agent_history"] = result["agent_history"]
 
@@ -2035,6 +2207,39 @@ if app is not None:
                     request.strip(),
                     use_agent_fallback=use_agent_fallback,
                 )
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=repr(exc)) from exc
+
+    @app.post("/v1/segment")
+    def segment_v1(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            validated = validate_v1_segment_request(payload)
+        except grounding_intent.GroundingIntentError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": exc.code,
+                    "message": str(exc),
+                    "details": exc.details,
+                },
+            ) from exc
+        with LOCK:
+            try:
+                return segment_once(
+                    validated["source_phrase"],
+                    use_agent_fallback=validated["use_agent_fallback"],
+                    supplied_intent=validated["grounding_intent"],
+                    supplied_intent_hash=validated["intent_hash"],
+                )
+            except grounding_intent.GroundingIntentError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": exc.details,
+                    },
+                ) from exc
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=repr(exc)) from exc
 

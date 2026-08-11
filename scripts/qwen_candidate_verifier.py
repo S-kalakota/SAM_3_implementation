@@ -43,6 +43,57 @@ class VerifierResponseError(ValueError):
     """Raised when Qwen does not return the required verifier schema."""
 
 
+def identity_verifier_json_schema(candidate_count: int) -> dict[str, Any]:
+    """Return the strict generation schema for one identity-verifier call."""
+
+    if isinstance(candidate_count, bool) or not isinstance(candidate_count, int):
+        raise ValueError("candidate_count must be an integer")
+    if candidate_count < 1:
+        raise ValueError("candidate_count must be positive")
+    candidate_id = {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": candidate_count,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "decision": {"type": "string", "enum": ["select", "no_match"]},
+            "selected_candidate_ids": {
+                "type": "array",
+                "items": candidate_id,
+                "maxItems": candidate_count,
+                "uniqueItems": True,
+            },
+            "candidate_assessments": {
+                "type": "array",
+                "minItems": candidate_count,
+                "maxItems": candidate_count,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": candidate_id,
+                        "most_likely_object": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "matches_target": {"type": "boolean"},
+                    },
+                    "required": sorted(IDENTITY_ASSESSMENT_KEYS),
+                    "additionalProperties": False,
+                },
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            },
+        },
+        "required": sorted(IDENTITY_RESPONSE_KEYS),
+        "additionalProperties": False,
+    }
+
+
 def _identity_candidate_id(value: Any, *, field: str) -> int:
     """Normalize an unambiguous identity ID while rejecting ambiguous text."""
 
@@ -608,9 +659,7 @@ def build_identity_verifier_messages(
         "non-empty and no_match when it is empty. confidence must be a number from 0 "
         "to 1. Candidate IDs must be JSON integers without quotes. matches_target must "
         "be a JSON boolean true or false without quotes. Do not use markdown or add "
-        "other text. The response is already prefixed "
-        "with the JSON text {\"decision\":. Continue with a quoted decision value and "
-        "the remaining keys, then close the object. Do not repeat the prefix."
+        "other text. Return one complete JSON object and nothing else."
     )
     selector_text = selector if selector is not None else "none"
     user_text = (
@@ -797,9 +846,8 @@ def run_identity_verifier(
                                 "contain only candidate_id, most_likely_object, and "
                                 "matches_target. selected_candidate_ids must exactly "
                                 "match the true matches_target assessments. Use JSON "
-                                "integers for IDs and unquoted JSON true/false values. The "
-                                "response is already prefixed with {\"decision\":. "
-                                "Continue the object without repeating that prefix."
+                                "integers for IDs and unquoted JSON true/false values. "
+                                "Return one complete JSON object and nothing else."
                             ),
                         },
                     ]

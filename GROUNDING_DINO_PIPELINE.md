@@ -24,7 +24,7 @@ Grounding DINO uses the official
 Transformers checkpoint. Run the cache command while network access is allowed:
 
 ```bash
-cd /home/team/VLA_Model_Work/SAM_3_implementation
+cd /home/team/VLA_Model_Work/GroundingDino
 ./sam3-dino cache-dino
 ```
 
@@ -42,7 +42,7 @@ SAM checkpoint, starts the service in the background, and waits until SAM,
 Grounding DINO, Qwen, and the ZED camera are ready:
 
 ```bash
-cd /home/team/VLA_Model_Work/SAM_3_implementation
+cd /home/team/VLA_Model_Work/GroundingDino
 ./sam3-dino start
 ```
 
@@ -142,6 +142,23 @@ curl -X POST \
 
 Use `scripts/mask_client_dino.py --agent-fallback ...` only for a deliberate
 diagnostic request.
+
+### Versioned FR5 request
+
+The FR5 bridge posts one exact JSON object to `/v1/segment` with
+`schema_version`, `source_phrase`, `grounding_intent`, `intent_hash`, and
+`use_agent_fallback`. The service validates the complete key set, source phrase,
+canonical intent, and SHA-256 hash before capturing a frame. It derives the
+DINO phrase and spatial selector from that sealed intent instead of running the
+legacy command parser, and the response echoes the same schema, intent, and
+hash for the bridge to verify.
+
+Attributes and one allowlisted spatial selector are supported. Source-region
+and relational intents return `unsupported_grounding_intent` with HTTP 422
+until deterministic DINO candidate filtering exists for those semantics. This
+is intentionally fail-closed. The normal robot bridge sends
+`use_agent_fallback=false`; enabling the unbounded agent requires an explicit
+diagnostic flag.
 
 ## Coordinate and response contract
 

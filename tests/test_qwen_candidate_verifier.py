@@ -113,6 +113,18 @@ class ParseVerifierResponseTests(unittest.TestCase):
 
 
 class ParseIdentityVerifierResponseTests(unittest.TestCase):
+    def test_generation_schema_fixes_candidate_count_and_object_shape(self) -> None:
+        schema = verifier.identity_verifier_json_schema(2)
+
+        self.assertFalse(schema["additionalProperties"])
+        assessments = schema["properties"]["candidate_assessments"]
+        self.assertEqual(assessments["minItems"], 2)
+        self.assertEqual(assessments["maxItems"], 2)
+        self.assertFalse(assessments["items"]["additionalProperties"])
+        candidate_id = assessments["items"]["properties"]["candidate_id"]
+        self.assertEqual(candidate_id["minimum"], 1)
+        self.assertEqual(candidate_id["maximum"], 2)
+
     def test_accepts_object_labels_and_consistent_selection(self) -> None:
         assessments = [
             {
@@ -205,6 +217,12 @@ class ParseIdentityVerifierResponseTests(unittest.TestCase):
                 identity_json(),
                 candidate_count=2,
             )
+
+    def test_generation_schema_requires_a_positive_candidate_count(self) -> None:
+        for value in (0, -1, True, 1.5):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    verifier.identity_verifier_json_schema(value)
 
 
 class RunVisualVerifierTests(unittest.TestCase):

@@ -156,6 +156,68 @@ class QwenVerificationInputTests(unittest.TestCase):
             )
         )
 
+    def test_dino_identity_generation_uses_strict_json_schema(self) -> None:
+        mask = one_mask()
+        kept = [(mask, 0.9)]
+        candidate_record = candidate(0, mask)
+        candidate_record["proposal_provenance"] = {
+            "proposal_id": 1,
+            "dino_phrase": "orange and grey box",
+            "dino_score": 0.8,
+            "sam_prompt_box_xyxy_crop_pixels": [8.0, 18.0, 52.0, 42.0],
+            "dino_original_box_xyxy_crop_pixels": [10.0, 20.0, 50.0, 40.0],
+        }
+        response = json.dumps(
+            {
+                "decision": "select",
+                "selected_candidate_ids": [1],
+                "candidate_assessments": [
+                    {
+                        "candidate_id": 1,
+                        "most_likely_object": "orange and grey box",
+                        "matches_target": True,
+                    }
+                ],
+                "confidence": 0.95,
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            request_dir = Path(directory)
+            frame_path = request_dir / "frame.png"
+            Image.fromarray(np.zeros((360, 384, 3), dtype=np.uint8)).save(
+                frame_path
+            )
+            with mock.patch.object(
+                mask_service.local_qwen,
+                "qwen_generate",
+                return_value=response,
+            ) as generate:
+                selected, _updated, verification = (
+                    mask_service.verify_candidates_with_qwen(
+                        request="pick up the orange and grey box",
+                        target_phrase="orange and grey box",
+                        selector=None,
+                        rgb_np=np.zeros((360, 384, 3), dtype=np.uint8),
+                        frame_path=frame_path,
+                        req_dir=request_dir,
+                        artifact_stem="dino",
+                        kept=kept,
+                        candidates=[candidate_record],
+                        args=make_args(),
+                    )
+                )
+
+        self.assertEqual(len(selected), 1)
+        self.assertTrue(verification["json_schema_constrained"])
+        generation_kwargs = generate.call_args.kwargs
+        self.assertIsNone(generation_kwargs["response_prefix"])
+        schema = generation_kwargs["json_schema"]
+        self.assertEqual(
+            schema["properties"]["candidate_assessments"]["maxItems"],
+            1,
+        )
+
 
 class CandidateGenerationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -662,6 +724,196 @@ class DirectPipelineTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record["center_xy_crop_pixels"], [25.0, 30.0])
         self.assertEqual(record["center_xy_full_pixels"], [473.0, 390.0])
+
+
+class V1RobotBridgeContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.saved_state = dict(mask_service.STATE)
+        mask_service.STATE.clear()
+
+    def tearDown(self) -> None:
+        mask_service.STATE.clear()
+        mask_service.STATE.update(self.saved_state)
+
+    @staticmethod
+    def intent(source_phrase: str = "pick up the orange and grey box") -> dict:
+        return mask_service.grounding_intent.parse_grounding_intent(source_phrase)
+
+    def payload(self, **updates) -> dict:
+        canonical = self.intent()
+        payload = {
+            "schema_version": 1,
+            "source_phrase": canonical["source_phrase"],
+            "grounding_intent": canonical,
+            "intent_hash": mask_service.grounding_intent.intent_hash(canonical),
+            "use_agent_fallback": False,
+        }
+        payload.update(updates)
+        return payload
+
+    def test_validates_exact_robot_bridge_envelope(self) -> None:
+        payload = self.payload()
+
+        validated = mask_service.validate_v1_segment_request(payload)
+
+        self.assertEqual(validated["source_phrase"], payload["source_phrase"])
+        self.assertEqual(validated["grounding_intent"], payload["grounding_intent"])
+        self.assertEqual(validated["intent_hash"], payload["intent_hash"])
+        self.assertFalse(validated["use_agent_fallback"])
+
+    def test_rejects_changed_intent_hash(self) -> None:
+        with self.assertRaises(
+            mask_service.grounding_intent.GroundingIntentError
+        ) as raised:
+            mask_service.validate_v1_segment_request(
+                self.payload(intent_hash="0" * 64)
+            )
+
+        self.assertEqual(raised.exception.code, "grounding_identity_mismatch")
+
+    def test_rejects_contract_drift(self) -> None:
+        payload = self.payload()
+        payload["unexpected"] = True
+
+        with self.assertRaises(
+            mask_service.grounding_intent.GroundingIntentError
+        ) as raised:
+            mask_service.validate_v1_segment_request(payload)
+
+        self.assertEqual(raised.exception.details["extra"], ["unexpected"])
+
+    def test_builds_dino_phrase_and_selector_from_sealed_intent(self) -> None:
+        canonical = self.intent("pick up the rightmost orange and grey box")
+
+        pipeline = mask_service.build_v1_pipeline_intent(canonical)
+
+        self.assertEqual(pipeline["target_phrase"], "orange and gray box")
+        self.assertEqual(pipeline["selector"], "rightmost")
+        self.assertEqual(pipeline["parser"], "validated_grounding_intent_v1")
+
+    def test_fails_closed_for_unimplemented_relational_semantics(self) -> None:
+        source_phrase = "pick up the orange box left of the blue box"
+        canonical = {
+            "schema_version": 1,
+            "source_phrase": source_phrase,
+            "category": "box",
+            "attributes": [{"type": "color", "value": "orange"}],
+            "selector": None,
+            "source_region": None,
+            "relations": [{"type": "left_of", "anchor": "blue box"}],
+            "ambiguities": [],
+        }
+
+        with self.assertRaises(
+            mask_service.grounding_intent.GroundingIntentError
+        ) as raised:
+            mask_service.build_v1_pipeline_intent(canonical)
+
+        self.assertEqual(raised.exception.code, "unsupported_grounding_intent")
+
+    def test_segment_once_preserves_identity_without_reparsing(self) -> None:
+        canonical = self.intent()
+        canonical_hash = mask_service.grounding_intent.intent_hash(canonical)
+        mask = one_mask()
+        direct_result = {
+            "path": "dino_sam_verified",
+            "kept": [(mask, 0.9)],
+            "fallback_eligible": False,
+            "presence_gate": {"num_kept": 1, "kept_indices": [0]},
+            "sam_json": "/tmp/combined_candidates.json",
+            "combined_candidates": "/tmp/combined_candidates.json",
+            "dino_proposals": "/tmp/dino_proposals.json",
+            "overlay": {"output": "/tmp/overlay.png"},
+            "sam_prompt": "orange and gray box",
+            "sam_prompts": ["orange and gray box", "box"],
+            "selection": None,
+            "intent": {},
+            "verification": {"status": "selected"},
+            "candidate_generation": {"source_used": "dino_sam_boxes"},
+            "depth_refinement": {"status": "completed"},
+            "proposal_provenance": [],
+            "stage_timings": {},
+        }
+        depth_report = {"objects": [{"score": 0.9}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            frame_path = run_dir / "frame.png"
+            Image.new("RGB", (384, 360)).save(frame_path)
+            mask_service.STATE.update({"args": make_args(), "run_dir": run_dir})
+            frame_info = {
+                "saved_frame": str(frame_path),
+                "depth_measure": "DEPTH",
+                "xyz_measure": "XYZ",
+                "crop": {
+                    "enabled": True,
+                    "applied_xyxy": [448, 360, 832, 720],
+                },
+            }
+            with (
+                mock.patch.object(
+                    mask_service,
+                    "capture_request_frame",
+                    return_value=(
+                        np.zeros((360, 384, 3), dtype=np.uint8),
+                        np.ones((360, 384), dtype=np.float32),
+                        np.ones((360, 384, 4), dtype=np.float32),
+                        frame_info,
+                    ),
+                ),
+                mock.patch.object(
+                    mask_service,
+                    "direct_segment",
+                    return_value=direct_result,
+                ) as direct_call,
+                mock.patch.object(
+                    mask_service,
+                    "parse_request_intent",
+                ) as legacy_parser,
+                mock.patch.object(
+                    mask_service.task5,
+                    "object_depth_report",
+                    return_value=depth_report,
+                ),
+            ):
+                response = mask_service.segment_once(
+                    canonical["source_phrase"],
+                    supplied_intent=canonical,
+                    supplied_intent_hash=canonical_hash,
+                )
+
+            legacy_parser.assert_not_called()
+            pipeline_intent = direct_call.call_args.kwargs["intent"]
+            self.assertEqual(pipeline_intent["target_phrase"], "orange and gray box")
+            self.assertEqual(response["schema_version"], 1)
+            self.assertEqual(response["grounding_intent"], canonical)
+            self.assertEqual(response["intent_hash"], canonical_hash)
+            self.assertTrue(Path(response["intent_record"]).is_file())
+            self.assertTrue(Path(response["result_json"]).is_file())
+
+    def test_v1_route_forwards_the_validated_identity(self) -> None:
+        route = next(
+            route
+            for route in mask_service.app.routes
+            if getattr(route, "path", None) == "/v1/segment"
+        )
+        payload = self.payload()
+        expected = {"schema_version": 1}
+
+        with mock.patch.object(
+            mask_service,
+            "segment_once",
+            return_value=expected,
+        ) as segment_call:
+            response = route.endpoint(payload)
+
+        self.assertEqual(response, expected)
+        segment_call.assert_called_once_with(
+            payload["source_phrase"],
+            use_agent_fallback=False,
+            supplied_intent=payload["grounding_intent"],
+            supplied_intent_hash=payload["intent_hash"],
+        )
 
 
 if __name__ == "__main__":

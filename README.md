@@ -23,6 +23,30 @@ is unreliable. For an A/B comparison, restart once with
 `SAM3_DINO_DEPTH_REFINEMENT=0 ./sam3-dino restart`; restart normally to
 re-enable it.
 
+### FR5 robot-target bridge
+
+The DINO service implements the same sealed `/v1/segment` request used by the
+FR5 target bridge. Start perception first, then create a checked target from the
+ROS workspace:
+
+```bash
+cd /home/team/VLA_Model_Work/GroundingDino
+./sam3-dino start
+
+cd /home/team/VLA_Model_Work/robot_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 run fr5_bringup vla_pick_target.py \
+  --text "pick up the orange and grey box"
+```
+
+This writes `/tmp/fr5_vla_target.json` and an audit image but never moves the
+robot. The endpoint validates and echoes the exact structured intent and hash,
+then runs DINO boxes → SAM masks → clean-crop Qwen identity verification →
+geometry/depth refinement. The unbounded agent fallback is opt-in. Relational
+and source-region requests currently return HTTP 422 rather than silently
+ignoring unsupported semantics.
+
 See `GROUNDING_DINO_PIPELINE.md` for its proposal thresholds, artifacts, and
 validation gates.
 
@@ -53,7 +77,9 @@ export SAM3_V2_RELEASE_REPORT="$PWD/evaluation/v2_release_approved.json"
 
 Until those gates are approved, use `./sam3 interpret "..."` for language-only
 testing or `./sam3 --v1 "orange and white box"` for the retained version-1
-rollback path. `/segment`, `/v1/segment`, and the robot bridge remain unchanged.
+rollback path. The standard service retains its own `/segment` and
+`/v1/segment` implementations; the DINO launcher now provides a compatible
+sealed v1 endpoint for the robot bridge as described above.
 
 To collect the frozen, shadow, and live evidence needed to build the aggregate
 release report, use the separate evaluation flag. It opens only the same
