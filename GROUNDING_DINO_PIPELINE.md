@@ -97,9 +97,15 @@ containing the exact target, category head, `box`, `package`, `carton`, and
 `flat rectangular item`, bounded to five phrases in one DINO call.
 
 A DINO request makes at most three SAM box calls and one visual verification
-stage. If DINO has no usable proposal or no score/area-gated box mask, the
+stage. Qwen receives the unmodified camera crop plus clean candidate crops made
+from the original Grounding DINO boxes. It names the most likely primary object
+in every crop and performs semantic identity matching only; SAM mask overlays
+are retained as human diagnostics but are not shown to Qwen. Existing
+deterministic score, area, spatial, and depth gates remain separate. If DINO has
+no usable proposal or no score/area-gated box mask, the
 service makes one legacy SAM text call and verifies that result through the same
-Qwen gate. A Qwen `no_match`, low-confidence answer, malformed answer, model
+fail-closed policy using the legacy boundary input because no DINO box exists.
+A Qwen `no_match`, low-confidence answer, malformed answer, model
 error, semantic mismatch, or selected area over 25% produces no target and does
 not trigger another fallback.
 
@@ -151,6 +157,7 @@ dino_sam/combined_candidates.png
 dino_sam/mask_001.png ... mask_003.png
 dino_qwen_candidates.png
 dino_qwen_candidate_zooms.png
+dino_qwen_clean_dino_crops.png
 dino_qwen_candidates.json
 dino_qwen_verification.json
 overlay_dino.png

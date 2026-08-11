@@ -41,7 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUN_DIR = PROJECT_ROOT / "outputs" / "service"
 DEFAULT_SELECTION_ROI = os.environ.get("MASK_SERVICE_SELECTION_ROI")
 DEFAULT_VERIFIER_MAX_NEW_TOKENS = int(
-    os.environ.get("SAM3_QWEN_VERIFIER_MAX_NEW_TOKENS", "256")
+    os.environ.get("SAM3_QWEN_VERIFIER_MAX_NEW_TOKENS", "384")
 )
 DEFAULT_VERIFIER_MIN_CONFIDENCE = float(
     os.environ.get("SAM3_QWEN_VERIFIER_MIN_CONFIDENCE", "0.70")
@@ -756,7 +756,9 @@ def verify_candidates_with_qwen(
         "candidate_records": [],
         "candidate_overlay": None,
         "candidate_zoom": None,
+        "candidate_clean_crops": None,
         "candidate_manifest": None,
+        "verifier_input_mode": None,
         "attempts": [],
     }
     if not kept:
@@ -783,6 +785,23 @@ def verify_candidates_with_qwen(
             kept,
             candidate_zoom_path,
         )
+        has_dino_boxes = all(
+            isinstance(record.get("dino_box_xyxy_crop_pixels"), (list, tuple))
+            and len(record["dino_box_xyxy_crop_pixels"]) == 4
+            for record in candidate_records
+        )
+        candidate_clean_crops = None
+        if has_dino_boxes:
+            candidate_clean_crop_path = (
+                req_dir / f"{artifact_stem}_qwen_clean_dino_crops.png"
+            )
+            candidate_clean_crops = (
+                candidate_verifier.render_clean_dino_candidate_crops(
+                    rgb_np,
+                    candidate_records,
+                    candidate_clean_crop_path,
+                )
+            )
         manifest_path = req_dir / f"{artifact_stem}_qwen_candidates.json"
         manifest_path.write_text(
             json.dumps(candidate_records, indent=2) + "\n",
@@ -804,17 +823,31 @@ def verify_candidates_with_qwen(
             finally:
                 qwen_call_timings.append(time.monotonic() - qwen_started)
 
-        verification = candidate_verifier.run_visual_verifier(
-            request=request,
-            target_phrase=target_phrase,
-            selector=selector,
-            frame_path=frame_path,
-            candidate_overlay_path=candidate_overlay_path,
-            candidate_zoom_path=candidate_zoom_path,
-            candidate_records=candidate_records,
-            send_generate_request=send_generate_request,
-            min_select_confidence=args.verifier_min_confidence,
-        )
+        if candidate_clean_crops is not None:
+            verification = candidate_verifier.run_identity_verifier(
+                request=request,
+                target_phrase=target_phrase,
+                selector=selector,
+                frame_path=frame_path,
+                candidate_crop_path=Path(candidate_clean_crops["output"]),
+                candidate_records=candidate_records,
+                send_generate_request=send_generate_request,
+                min_select_confidence=args.verifier_min_confidence,
+            )
+            verifier_input_mode = "clean_dino_crops_identity_only"
+        else:
+            verification = candidate_verifier.run_visual_verifier(
+                request=request,
+                target_phrase=target_phrase,
+                selector=selector,
+                frame_path=frame_path,
+                candidate_overlay_path=candidate_overlay_path,
+                candidate_zoom_path=candidate_zoom_path,
+                candidate_records=candidate_records,
+                send_generate_request=send_generate_request,
+                min_select_confidence=args.verifier_min_confidence,
+            )
+            verifier_input_mode = "legacy_mask_boundary"
         verification = candidate_verifier.apply_max_area_fraction_policy(
             verification,
             candidate_records,
@@ -831,7 +864,11 @@ def verify_candidates_with_qwen(
                 "candidate_records": candidate_records,
                 "candidate_overlay": candidate_overlay["output"],
                 "candidate_zoom": candidate_zoom["output"],
+                "candidate_clean_crops": None
+                if candidate_clean_crops is None
+                else candidate_clean_crops["output"],
                 "candidate_manifest": str(manifest_path),
+                "verifier_input_mode": verifier_input_mode,
             }
         )
     except Exception as exc:
@@ -1205,6 +1242,7 @@ def direct_segment(
         "overlay": overlay,
         "candidate_overlay": verification.get("candidate_overlay"),
         "candidate_zoom": verification.get("candidate_zoom"),
+        "candidate_clean_crops": verification.get("candidate_clean_crops"),
         "agent_render_output": None,
         "sam_prompt": sam_prompt,
         "sam_prompts": candidate_generation["phrases"],
@@ -1303,6 +1341,7 @@ def agent_fallback_segment(
         "overlay": overlay,
         "candidate_overlay": verification.get("candidate_overlay"),
         "candidate_zoom": verification.get("candidate_zoom"),
+        "candidate_clean_crops": verification.get("candidate_clean_crops"),
         "agent_render_output": str(agent_render_output),
         "agent_history": str(history_path),
         "sam_prompt": target_phrase,
@@ -1493,6 +1532,7 @@ def segment_once(request: str, *, use_agent_fallback: bool = False) -> dict[str,
         "overlay": result["overlay"],
         "candidate_overlay": result.get("candidate_overlay"),
         "candidate_zoom": result.get("candidate_zoom"),
+        "candidate_clean_crops": result.get("candidate_clean_crops"),
         "sam_json": result["sam_json"],
         "combined_candidates": result.get("combined_candidates"),
         "dino_proposals": result.get("dino_proposals"),
