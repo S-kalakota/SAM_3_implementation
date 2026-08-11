@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Convert a language-selected SAM box into a checked FR5 surface target.
+"""Convert a language-selected DINO/SAM mask into a checked FR5 surface target.
 
 This process has no robot-motion interface.  It parses a constrained pick
-request with ``VLA_project``, asks the resident SAM 3.1 service for one fresh
-segmentation, back-projects the selected bounding-box center with ZED depth,
-and writes the schema-1 target consumed by ``b3_hover.py`` and
+request with ``VLA_project``, asks the resident Grounding DINO/SAM 3.1 service
+for one fresh segmentation, back-projects the selected bounding-box center
+with ZED depth, and writes the schema-1 target consumed by ``b3_hover.py`` and
 ``d0_point_grab.py``.
 
-The SAM service must be running on localhost.  Its implementation is in the
-``Daemon`` branch of ``~/VLA_Model_Work/SAM_3_implementation``.
+The DINO service must be running on localhost from
+``~/VLA_Model_Work/GroundingDino``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import re
 import shlex
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +32,7 @@ import numpy as np
 
 DEFAULT_PROJECT_ROOT = Path.home() / 'VLA_Model_Work'
 DEFAULT_VLA_PROJECT = DEFAULT_PROJECT_ROOT / 'VLA_project'
+DEFAULT_SAM_PROJECT = DEFAULT_PROJECT_ROOT / 'GroundingDino'
 DEFAULT_CALIBRATION = (
     DEFAULT_PROJECT_ROOT / 'robot_ws' / 'calib' / 'T_base_cam.json')
 DEFAULT_TARGET = Path('/tmp/fr5_vla_target.json')
@@ -43,12 +43,15 @@ BASE_FRAME = 'base_link'
 CAMERA_FRAME = 'zed_left_optical'
 HOVER_M = 0.100
 CALIBRATION_MARGIN_M = 0.075
-DEFAULT_MIN_SCORE = 0.25
+DEFAULT_MIN_SCORE = 0.10
 DEFAULT_MIN_VALID_DEPTH_FRACTION = 0.80
 DEFAULT_MIN_VALID_DEPTH_PIXELS = 20
 DEFAULT_MAX_DEPTH_SPREAD_MM = 75.0
 DEFAULT_MAX_XYZ_DISAGREEMENT_MM = 60.0
 DEFAULT_MAX_FRAME_AGE_S = 30.0
+DEFAULT_MIN_OBJECT_EXTENT_MM = 5.0
+DEFAULT_MAX_OBJECT_EXTENT_MM = 600.0
+DEFAULT_SURFACE_Z_MARGIN_MM = 75.0
 
 
 class IntegrationError(RuntimeError):
@@ -66,14 +69,15 @@ class PickIntent:
     object_name: str
     qualifier: str | None
     destination: str | None
+    source_phrase: str
+    grounding_intent: dict[str, Any]
+    intent_hash: str
 
     @property
     def segmentation_request(self) -> str:
         """Return the deterministic category/qualifier SAM request."""
 
-        if self.qualifier:
-            return f'{self.qualifier} {self.object_name}'
-        return self.object_name
+        return self.source_phrase
 
 
 @dataclass(frozen=True)
@@ -102,13 +106,6 @@ QUALIFIER_PATTERNS = (
 )
 
 
-def normalize_phrase(value: str) -> str:
-    """Normalize an object phrase for an identity comparison."""
-
-    normalized = re.sub(r'[^a-z0-9]+', ' ', value.lower()).strip()
-    return re.sub(r'^(?:the|a|an)\s+', '', normalized)
-
-
 def split_spatial_qualifier(object_phrase: str) -> tuple[str, str | None]:
     """Remove one supported qualifier from the parsed object phrase."""
     normalized = re.sub(r'\s+', ' ', object_phrase.strip().lower())
@@ -135,6 +132,24 @@ def split_spatial_qualifier(object_phrase: str) -> tuple[str, str | None]:
     return object_name, qualifier
 
 
+def load_grounding_contract(sam_project: Path):
+    """Import the one shared structured-intent implementation."""
+
+    scripts_dir = sam_project.expanduser().resolve() / 'scripts'
+    if not (scripts_dir / 'grounding_intent.py').is_file():
+        raise IntegrationError(
+            f'grounding intent contract not found under {scripts_dir}')
+    scripts_text = str(scripts_dir)
+    if scripts_text not in sys.path:
+        sys.path.insert(0, scripts_text)
+    try:
+        import grounding_intent
+    except ImportError as exc:
+        raise IntegrationError(
+            f'cannot import structured grounding contract: {exc}') from exc
+    return grounding_intent
+
+
 def load_pick_intent(
     *,
     text: str | None,
@@ -142,6 +157,7 @@ def load_pick_intent(
     voice_duration: float,
     whisper_model: str | None,
     vla_project: Path,
+    sam_project: Path,
 ) -> PickIntent:
     """Get text or speech from VLA_project and constrain it to one pick."""
 
@@ -176,12 +192,28 @@ def load_pick_intent(
         raise IntegrationError(
             f'only an object pick request is supported, not {command.action!r}')
     object_name, qualifier = split_spatial_qualifier(command.object)
+    source_phrase = (
+        f'{qualifier} {object_name}' if qualifier else object_name
+    )
+    if command.source:
+        source_phrase = f'{source_phrase} from the {command.source}'
+    grounding = load_grounding_contract(sam_project)
+    try:
+        structured = grounding.parse_grounding_intent(source_phrase)
+        structured_hash = grounding.intent_hash(structured)
+    except Exception as exc:
+        code = getattr(exc, 'code', type(exc).__name__)
+        raise IntegrationError(
+            f'visual grounding intent refused ({code}): {exc}') from exc
     return PickIntent(
         transcript=transcript.text,
         transcript_source=transcript.source,
-        object_name=object_name,
-        qualifier=qualifier,
+        object_name=structured['category'],
+        qualifier=structured['selector'],
         destination=command.destination,
+        source_phrase=structured['source_phrase'],
+        grounding_intent=structured,
+        intent_hash=structured_hash,
     )
 
 
@@ -266,7 +298,7 @@ def load_calibration(path: Path) -> Calibration:
 
 
 def request_segmentation(
-    request: str,
+    intent: PickIntent,
     *,
     host: str,
     use_agent_fallback: bool,
@@ -277,12 +309,18 @@ def request_segmentation(
     base_url = host.rstrip('/')
     if not re.match(r'^https?://', base_url):
         base_url = 'http://' + base_url
-    query = urllib.parse.urlencode({
-        'request': request,
-        'use_agent_fallback': str(use_agent_fallback).lower(),
-    })
+    request_payload = {
+        'schema_version': 1,
+        'source_phrase': intent.source_phrase,
+        'grounding_intent': intent.grounding_intent,
+        'intent_hash': intent.intent_hash,
+        'use_agent_fallback': bool(use_agent_fallback),
+    }
     http_request = urllib.request.Request(
-        f'{base_url}/segment?{query}', method='POST')
+        f'{base_url}/v1/segment',
+        data=json.dumps(request_payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+        method='POST')
     try:
         with urllib.request.urlopen(http_request, timeout=timeout) as response:
             payload = json.load(response)
@@ -316,21 +354,31 @@ def read_response_file(path: Path) -> dict[str, Any]:
 
 
 def validate_response_identity(response: dict[str, Any], intent: PickIntent) -> None:
-    """Ensure SAM operated on the exact VLA object and qualifier."""
+    """Ensure the exact versioned intent survived the service round trip."""
 
-    service_intent = response.get('intent')
-    if not isinstance(service_intent, dict):
-        raise IntegrationError('SAM response has no parsed intent metadata')
-    target_phrase = service_intent.get('target_phrase')
-    if normalize_phrase(str(target_phrase or '')) != normalize_phrase(intent.object_name):
+    if response.get('schema_version') != 1:
+        raise IntegrationError('SAM response has no supported schema version')
+    returned_intent = response.get('grounding_intent')
+    if not isinstance(returned_intent, dict):
+        raise IntegrationError('SAM response has no structured grounding intent')
+    if returned_intent != intent.grounding_intent:
         raise IntegrationError(
-            'SAM target does not match the VLA object: '
-            f'{target_phrase!r} != {intent.object_name!r}')
-    service_selector = service_intent.get('selector')
-    if service_selector != intent.qualifier:
+            'SAM returned a changed structured grounding intent')
+    source_phrase = returned_intent.get('source_phrase')
+    if source_phrase != intent.source_phrase:
         raise IntegrationError(
-            'SAM selector does not match the VLA qualifier: '
-            f'{service_selector!r} != {intent.qualifier!r}')
+            f'SAM source phrase changed: {source_phrase!r} != '
+            f'{intent.source_phrase!r}')
+    canonical_hash = hashlib.sha256(json.dumps(
+        returned_intent,
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=True,
+    ).encode('utf-8')).hexdigest()
+    returned_hash = response.get('intent_hash')
+    if returned_hash != intent.intent_hash or returned_hash != canonical_hash:
+        raise IntegrationError(
+            'SAM structured intent hash does not match the request')
     selection = response.get('selection')
     if selection is not None:
         if not isinstance(selection, dict):
@@ -385,6 +433,42 @@ def selected_box(
     if response.get('num_kept') != 1:
         raise IntegrationError(
             f'exactly one mask is required; SAM kept {response.get("num_kept")!r}')
+    selected_mask = response.get('selected_mask')
+    if isinstance(selected_mask, dict):
+        zed_frame = response.get('zed_frame')
+        crop = zed_frame.get('crop') if isinstance(zed_frame, dict) else None
+        if not isinstance(crop, dict):
+            raise IntegrationError('SAM selected mask lacks crop metadata')
+        try:
+            image_width = int(crop['output_width'])
+            image_height = int(crop['output_height'])
+            x, y, width, height = [
+                int(value) for value in selected_mask['bbox_xywh_crop_pixels']
+            ]
+            local_u, local_v = [
+                int(round(float(value)))
+                for value in selected_mask['center_xy_crop_pixels']
+            ]
+            full_u, full_v = [
+                int(round(float(value)))
+                for value in selected_mask['center_xy_full_pixels']
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise IntegrationError('SAM selected mask coordinates are invalid') from exc
+        if (
+            image_width <= 0 or image_height <= 0 or x < 0 or y < 0
+            or width <= 0 or height <= 0 or x + width > image_width
+            or y + height > image_height
+        ):
+            raise IntegrationError('SAM selected mask box exceeds the crop')
+        return (
+            [x, y, x + width, y + height],
+            [local_u, local_v],
+            [full_u, full_v],
+            image_width,
+            image_height,
+        )
+
     gate = response.get('presence_gate')
     if not isinstance(gate, dict):
         raise IntegrationError('SAM response has no presence gate')
@@ -565,8 +649,25 @@ def build_target_record(
     stats: dict[str, Any],
     service_xyz: np.ndarray,
     max_xyz_disagreement_m: float,
+    min_object_extent_m: float,
+    max_object_extent_m: float,
+    surface_z_margin_m: float,
 ) -> dict[str, Any]:
     """Transform checked camera evidence into the existing B3 contract."""
+
+    bbox_width_pixels = bbox_local[2] - bbox_local[0]
+    bbox_height_pixels = bbox_local[3] - bbox_local[1]
+    approximate_width_m = bbox_width_pixels * depth_m / calibration.intrinsics['fx']
+    approximate_height_m = bbox_height_pixels * depth_m / calibration.intrinsics['fy']
+    largest_extent_m = max(approximate_width_m, approximate_height_m)
+    if largest_extent_m < min_object_extent_m:
+        raise IntegrationError(
+            f'projected object extent is {largest_extent_m * 1000:.1f} mm '
+            f'(minimum {min_object_extent_m * 1000:.1f} mm)')
+    if largest_extent_m > max_object_extent_m:
+        raise IntegrationError(
+            f'projected object extent is {largest_extent_m * 1000:.1f} mm '
+            f'(maximum {max_object_extent_m * 1000:.1f} mm)')
 
     camera_xyz = backproject_pixel(
         center_full, depth_m, calibration.intrinsics)
@@ -584,6 +685,12 @@ def build_target_record(
     error = envelope_error(base_xyz, calibration.base_points, 'base target')
     if error:
         raise IntegrationError(error)
+    surface_z_min = float(calibration.base_points[:, 2].min() - surface_z_margin_m)
+    surface_z_max = float(calibration.base_points[:, 2].max() + surface_z_margin_m)
+    if not surface_z_min <= float(base_xyz[2]) <= surface_z_max:
+        raise IntegrationError(
+            f'target surface height {base_xyz[2]:.4f} m is outside calibrated '
+            f'range {surface_z_min:.4f}..{surface_z_max:.4f} m')
     hover = base_xyz + np.asarray([0.0, 0.0, HOVER_M])
 
     return {
@@ -605,11 +712,14 @@ def build_target_record(
             'object': intent.object_name,
             'qualifier': intent.qualifier,
             'destination': intent.destination,
+            'grounding': intent.grounding_intent,
+            'grounding_hash': intent.intent_hash,
         },
         'segmentation': {
             'request': intent.segmentation_request,
             'path': response.get('path'),
             'sam_prompt': response.get('sam_prompt'),
+            'sam_prompts': response.get('sam_prompts'),
             'score': score,
             'bbox_xyxy_in_segmentation_image': bbox_local,
             'bbox_center_pixel_in_segmentation_image': center_local,
@@ -617,6 +727,10 @@ def build_target_record(
             'result_json': response.get('result_json'),
             'sam_json': response.get('sam_json'),
             'output_dir': response.get('output_dir'),
+            'selected_mask': response.get('selected_mask'),
+            'candidate_generation': response.get('candidate_generation'),
+            'verification': response.get('verification'),
+            'geometry_gate': response.get('geometry_gate'),
         },
         'frame': {
             'path': str(frame_path),
@@ -634,6 +748,20 @@ def build_target_record(
         'depth_evidence': {
             **stats,
             'selected_depth_m': depth_m,
+        },
+        'physical_size_evidence': {
+            'method': 'pinhole projection of selected mask bounding box',
+            'bbox_width_pixels': bbox_width_pixels,
+            'bbox_height_pixels': bbox_height_pixels,
+            'approximate_width_m': approximate_width_m,
+            'approximate_height_m': approximate_height_m,
+            'largest_extent_m': largest_extent_m,
+            'allowed_extent_m': [min_object_extent_m, max_object_extent_m],
+        },
+        'surface_height_evidence': {
+            'base_surface_z_m': float(base_xyz[2]),
+            'calibrated_allowed_z_m': [surface_z_min, surface_z_max],
+            'margin_m': surface_z_margin_m,
         },
         'base_surface_xyz_m': base_xyz.tolist(),
         'hover_offset_m': HOVER_M,
@@ -737,12 +865,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--voice-duration', type=float, default=5.0)
     parser.add_argument('--whisper-model')
     parser.add_argument('--vla-project', type=Path, default=DEFAULT_VLA_PROJECT)
+    parser.add_argument('--sam-project', type=Path, default=DEFAULT_SAM_PROJECT)
     parser.add_argument('--service-host', default=DEFAULT_SERVICE_HOST)
     parser.add_argument('--service-timeout-sec', type=float, default=300.0)
-    parser.add_argument('--no-agent-fallback', action='store_true')
+    fallback = parser.add_mutually_exclusive_group()
+    fallback.add_argument(
+        '--agent-fallback', action='store_true',
+        help=('allow the unbounded SAM/Qwen agent only after the bounded DINO '
+              'pipeline produces no candidate; disabled by default'))
+    fallback.add_argument(
+        '--no-agent-fallback', action='store_true',
+        help=('deprecated compatibility flag; bounded DINO mode already disables '
+              'the agent fallback by default'))
     parser.add_argument(
         '--service-response', type=Path,
-        help='use a saved /segment response for an offline/stale-data test')
+        help='use a saved /v1/segment response for an offline/stale-data test')
     parser.add_argument('--calibration', type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument('--out', type=Path, default=DEFAULT_TARGET)
     parser.add_argument('--audit-output', type=Path, default=DEFAULT_AUDIT)
@@ -757,6 +894,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         default=DEFAULT_MAX_XYZ_DISAGREEMENT_MM)
     parser.add_argument('--max-frame-age-sec', type=float,
                         default=DEFAULT_MAX_FRAME_AGE_S)
+    parser.add_argument('--min-object-extent-mm', type=float,
+                        default=DEFAULT_MIN_OBJECT_EXTENT_MM)
+    parser.add_argument('--max-object-extent-mm', type=float,
+                        default=DEFAULT_MAX_OBJECT_EXTENT_MM)
+    parser.add_argument('--surface-z-margin-mm', type=float,
+                        default=DEFAULT_SURFACE_Z_MARGIN_MM)
     parser.add_argument(
         '--allow-stale-frame', action='store_true',
         help='allow offline perception inspection; D0 still sees the old timestamp')
@@ -777,6 +920,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error('--max-xyz-disagreement-mm must be positive')
     if args.max_frame_age_sec <= 0.0:
         parser.error('--max-frame-age-sec must be positive')
+    if args.min_object_extent_mm <= 0.0:
+        parser.error('--min-object-extent-mm must be positive')
+    if args.max_object_extent_mm <= args.min_object_extent_mm:
+        parser.error('--max-object-extent-mm must exceed --min-object-extent-mm')
+    if args.surface_z_margin_mm < 0.0:
+        parser.error('--surface-z-margin-mm must not be negative')
     return args
 
 
@@ -791,11 +940,14 @@ def main(argv: list[str] | None = None) -> int:
             voice_duration=args.voice_duration,
             whisper_model=args.whisper_model,
             vla_project=args.vla_project,
+            sam_project=args.sam_project,
         )
         print('=== INTERPRETED REQUEST (NO ROBOT MOTION) ===', flush=True)
         print(f'transcript: {intent.transcript}')
         print(f'object: {intent.object_name}')
         print(f'qualifier: {intent.qualifier or "none"}')
+        print(f'visual intent: {intent.grounding_intent}')
+        print(f'intent hash: {intent.intent_hash}')
         print(f'destination: {intent.destination or "none"}', flush=True)
 
         calibration = load_calibration(args.calibration)
@@ -803,9 +955,9 @@ def main(argv: list[str] | None = None) -> int:
             response = read_response_file(args.service_response)
         else:
             response = request_segmentation(
-                intent.segmentation_request,
+                intent,
                 host=args.service_host,
-                use_agent_fallback=not args.no_agent_fallback,
+                use_agent_fallback=args.agent_fallback,
                 timeout=args.service_timeout_sec,
             )
         validate_response_identity(response, intent)
@@ -838,6 +990,9 @@ def main(argv: list[str] | None = None) -> int:
             stats=stats,
             service_xyz=service_xyz,
             max_xyz_disagreement_m=args.max_xyz_disagreement_mm / 1000.0,
+            min_object_extent_m=args.min_object_extent_mm / 1000.0,
+            max_object_extent_m=args.max_object_extent_mm / 1000.0,
+            surface_z_margin_m=args.surface_z_margin_mm / 1000.0,
         )
         audit_path = render_audit(
             frame_path=frame_path,

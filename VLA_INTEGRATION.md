@@ -1,28 +1,26 @@
-# Language request to FR5 target
+# Language request to checked FR5 target
 
-`vla_pick_target.py` connects the existing constrained language parser, the
-resident SAM 3.1/ZED service, and the FR5 target-file interface. It does not
-move the robot.
+`vla_pick_target.py` connects the text/voice command parser, the resident
+Grounding DINO/SAM 3.1/Qwen/ZED service, and the FR5 target-file interface. It
+never moves the robot.
 
-## 1. Start the resident SAM service
-
-The service code currently lives on the local `Daemon` branch:
+## 1. Start the resident perception service
 
 ```bash
-cd ~/VLA_Model_Work/SAM_3_implementation
-git switch Daemon
-.venv/bin/python scripts/mask_service.py \
-  --host 127.0.0.1 \
-  --port 8765 \
-  --selection-roi 430,380,430,170
+cd ~/VLA_Model_Work/GroundingDino
+./sam3-dino start
 ```
 
-Wait for `service ready`. The service owns the ZED while it is running.
+After pulling or editing perception code, use `./sam3-dino restart` once. The
+service owns the ZED camera while it is running. `./sam3-dino status` reports
+the active crop, DINO proposal thresholds, SAM presence threshold, Qwen model,
+verifier policy, and depth-refinement gates.
 
-## 2. Build and make one no-motion target
+## 2. Build and create one no-motion target
 
 ```bash
 cd ~/VLA_Model_Work/robot_ws
+source /opt/ros/jazzy/setup.bash
 colcon build --packages-select fr5_bringup
 source install/setup.bash
 
@@ -30,18 +28,48 @@ ros2 run fr5_bringup vla_pick_target.py \
   --text "pick up the rightmost yellow box"
 ```
 
-The bridge writes:
+The bridge separates the robot action/destination from one versioned visual
+intent. It sends that intent and its SHA-256 hash to the DINO service's
+`/v1/segment` endpoint. The service validates the sealed intent before camera
+capture, derives the DINO target phrase without re-parsing the command, and
+returns the same source phrase, schema, complete intent, and hash. The bridge
+refuses any identity mismatch.
+
+The bounded DINO architecture is the default. The unbounded SAM/Qwen agent
+fallback is disabled for robot-target creation unless `--agent-fallback` is
+explicitly supplied for a diagnostic run. Source-region and relational intents
+currently fail closed because this DINO path does not yet apply those semantics
+deterministically; object attributes and one spatial selector are supported.
+
+Accepted requests write:
 
 - `/tmp/fr5_vla_target_audit.png`: selected box, center, depth, and base XYZ;
-- `/tmp/fr5_vla_target.json`: schema-1 surface target accepted by the existing
-  B3/D0 tools.
+- `/tmp/fr5_vla_target.json`: schema-1 surface target for the existing B3/D0
+  tools;
+- the crop-local and full-frame binary masks beneath the SAM result directory.
 
-It refuses zero or multiple unresolved masks, mismatched object/selector
-metadata, stale frames, low-confidence or sparse/noisy depth, the wrong ZED
-view/resolution, a large box-center versus mask-XYZ disagreement, or a target
-outside the calibrated B1 envelope.
+Rejected requests write no new target. An older `/tmp/fr5_vla_target.json` can
+still exist, so never use it after a refusal without checking its timestamp.
 
-For push-to-talk, run the source script with the VLA environment that contains
+## Safety gates
+
+The complete path is fail-closed and requires:
+
+- schema-valid, unambiguous structured intent and matching identity hash;
+- at most three Grounding DINO proposals refined by SAM, followed by Qwen
+  identity verification on unmodified DINO-box crops;
+- deterministic spatial-selector resolution after semantic verification;
+- conservative geometry and ZED depth-discontinuity mask refinement;
+- workspace membership and a mask score greater than `0.10`;
+- at least 80% valid masked depth, at least 20 depth pixels, and no more than
+  75 mm p90-p10 depth spread;
+- plausible projected object size and calibrated camera/base workspace bounds;
+- a calibrated surface-height range and camera-XYZ consistency.
+
+The Qwen verifier threshold (`0.70`) and oversized-mask limit (`0.25` of the
+workspace crop) are independent of the SAM score threshold.
+
+For push-to-talk, run the source script with the VLA environment containing
 Whisper:
 
 ```bash
@@ -50,22 +78,18 @@ Whisper:
   --voice --voice-duration 5
 ```
 
-## 3. Validate before any grasp
-
-Inspect the audit overlay, then run the printed plan-only hover command:
+## 3. Inspect and plan before any motion
 
 ```bash
+xdg-open /tmp/fr5_vla_target_audit.png
+jq . /tmp/fr5_vla_target.json
+
 ros2 run fr5_bringup b3_hover.py \
   --target-file=/tmp/fr5_vla_target.json
-```
 
-Only after repeated visual and hover validation, plan the D0 sequence:
-
-```bash
 ros2 run fr5_bringup d0_point_grab.py \
   --target-file=/tmp/fr5_vla_target.json
 ```
 
-Both commands above are plan-only. The language/SAM bridge intentionally has
-no execution flag; live motion remains an explicit, separately reviewed D0
-operation.
+Both robot commands above are plan-only by default. The language/SAM bridge has
+no live-execution flag; real motion remains a separately reviewed D0 operation.

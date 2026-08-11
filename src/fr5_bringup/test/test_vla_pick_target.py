@@ -24,6 +24,23 @@ SPEC.loader.exec_module(MODULE)
 class VlaPickTargetTests(unittest.TestCase):
     """Exercise intent, box, depth, and target-contract boundaries."""
 
+    def test_default_minimum_score_matches_sam_presence_gate(self):
+        """The bridge must not silently restore the old 0.25 cutoff."""
+
+        self.assertEqual(MODULE.DEFAULT_MIN_SCORE, 0.10)
+
+    def test_dino_is_default_and_agent_fallback_is_opt_in(self):
+        """Robot targets use the bounded DINO architecture unless requested."""
+
+        args = MODULE.parse_args(['--text', 'pick up the orange and grey box'])
+        self.assertEqual(args.sam_project.name, 'GroundingDino')
+        self.assertFalse(args.agent_fallback)
+
+        diagnostic = MODULE.parse_args([
+            '--text', 'pick up the orange and grey box', '--agent-fallback',
+        ])
+        self.assertTrue(diagnostic.agent_fallback)
+
     def test_splits_supported_spatial_qualifier(self):
         """A supported qualifier is canonicalized and removed."""
 
@@ -71,11 +88,61 @@ class VlaPickTargetTests(unittest.TestCase):
         self.assertEqual(full, [330, 260])
         self.assertEqual((width, height), (640, 480))
 
+    def test_prefers_versioned_selected_mask_coordinates(self):
+        response = {
+            'num_kept': 1,
+            'selected_mask': {
+                'bbox_xywh_crop_pixels': [10, 20, 30, 40],
+                'center_xy_crop_pixels': [25.0, 40.0],
+                'center_xy_full_pixels': [473.0, 400.0],
+            },
+            'zed_frame': {
+                'crop': {'output_width': 384, 'output_height': 360},
+            },
+        }
+
+        bbox, local, full, width, height = MODULE.selected_box(response)
+
+        self.assertEqual(bbox, [10, 20, 40, 60])
+        self.assertEqual(local, [25, 40])
+        self.assertEqual(full, [473, 400])
+        self.assertEqual((width, height), (384, 360))
+
     def test_refuses_ambiguous_sam_result(self):
         """An unresolved multiple-mask result cannot become a target."""
 
         with self.assertRaisesRegex(MODULE.IntegrationError, 'exactly one mask'):
             MODULE.selected_box({'num_kept': 2})
+
+    def test_structured_intent_identity_round_trip_is_fail_closed(self):
+        grounding = MODULE.load_grounding_contract(MODULE.DEFAULT_SAM_PROJECT)
+        structured = grounding.parse_grounding_intent(
+            'small orange box in the bin'
+        )
+        structured_hash = grounding.intent_hash(structured)
+        intent = MODULE.PickIntent(
+            transcript='pick up the small orange box in the bin',
+            transcript_source='text',
+            object_name='box',
+            qualifier=None,
+            destination='drop zone',
+            source_phrase=structured['source_phrase'],
+            grounding_intent=structured,
+            intent_hash=structured_hash,
+        )
+        response = {
+            'schema_version': 1,
+            'grounding_intent': structured,
+            'intent_hash': structured_hash,
+            'selection': None,
+        }
+        MODULE.validate_response_identity(response, intent)
+
+        with self.assertRaisesRegex(MODULE.IntegrationError, 'changed'):
+            MODULE.validate_response_identity(
+                {**response, 'grounding_intent': {**structured, 'category': 'bin'}},
+                intent,
+            )
 
     def test_depth_quality_gate_and_back_projection(self):
         """Good mask depth back-projects to the expected camera XYZ."""
@@ -129,12 +196,17 @@ class VlaPickTargetTests(unittest.TestCase):
             ]),
             resolution='hd720',
         )
+        grounding = MODULE.load_grounding_contract(MODULE.DEFAULT_SAM_PROJECT)
+        structured = grounding.parse_grounding_intent('box')
         intent = MODULE.PickIntent(
             transcript='pick up the box',
             transcript_source='text',
             object_name='box',
             qualifier=None,
             destination='drop zone',
+            source_phrase='box',
+            grounding_intent=structured,
+            intent_hash=grounding.intent_hash(structured),
         )
         stats = {
             'valid_fraction': 1.0,
@@ -158,6 +230,9 @@ class VlaPickTargetTests(unittest.TestCase):
             stats=stats,
             service_xyz=np.asarray([0.1, 0.2, 1.0]),
             max_xyz_disagreement_m=0.001,
+            min_object_extent_m=0.005,
+            max_object_extent_m=0.6,
+            surface_z_margin_m=0.075,
         )
 
         self.assertEqual(record['schema_version'], 1)
@@ -167,6 +242,9 @@ class VlaPickTargetTests(unittest.TestCase):
             record['base_surface_xyz_m'], [0.2, 0.1, 1.0])
         np.testing.assert_allclose(
             record['base_hover_xyz_m'], [0.2, 0.1, 1.1])
+        self.assertEqual(record['intent']['grounding'], structured)
+        self.assertAlmostEqual(
+            record['physical_size_evidence']['largest_extent_m'], 0.02)
 
 
 if __name__ == '__main__':
