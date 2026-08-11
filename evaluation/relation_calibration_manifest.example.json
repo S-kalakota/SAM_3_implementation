@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "threshold_grid": {
+    "inside_min_mask_fraction": [0.75, 0.8, 0.85],
+    "direction_margin_fraction": [0.02, 0.03, 0.04]
+  },
+  "cases": [
+    {
+      "case_id": "replace-with-reviewed-case",
+      "relationship": "inside",
+      "target_mask": "masks/target.png",
+      "anchor_mask": "masks/anchor.png",
+      "depth": "depth/case.npy",
+      "xyz": "xyz/case.npy",
+      "expected_pass": true,
+      "safety_case": false
+    }
+  ]
+}

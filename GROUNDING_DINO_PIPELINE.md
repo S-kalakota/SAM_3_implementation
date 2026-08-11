@@ -23,8 +23,8 @@ Grounding DINO uses the official
 Transformers checkpoint. Run the cache command while network access is allowed:
 
 ```bash
-cd /home/team/VLA_Model_Work/SAM3_Projects/SAM3_With_GroundingDINO
-./sam3 cache-dino
+cd /home/team/VLA_Model_Work/SAM_3_implementation
+./sam3-dino cache-dino
 ```
 
 The command downloads only JSON/tokenizer/processor files and safetensors,
@@ -36,18 +36,17 @@ startup with an explicit cache error.
 
 ## Start and inspect the service
 
-The project launcher reuses the virtual environment, SAM source, and SAM
-checkpoint from `SAM3_Without_GroundingDINO`, starts the service in the
-background, and waits until SAM, Grounding DINO, Qwen, and the ZED camera are
-ready:
+The DINO launcher reuses the repository's virtual environment, SAM source, and
+SAM checkpoint, starts the service in the background, and waits until SAM,
+Grounding DINO, Qwen, and the ZED camera are ready:
 
 ```bash
-cd /home/team/VLA_Model_Work/SAM3_Projects/SAM3_With_GroundingDINO
-./sam3 start
+cd /home/team/VLA_Model_Work/SAM_3_implementation
+./sam3-dino start
 ```
 
 Only one SAM service can own the ZED camera and port 8765. If the no-DINO SAM
-service is running, `./sam3 start` recognizes it and stops it cleanly before
+service is running, `./sam3-dino start` recognizes it and stops it cleanly before
 starting DINO. An unknown service occupying the port is never killed. If
 another terminal or development session restarts the no-DINO Docker container
 during DINO warmup, the launcher stops DINO and reports the conflict instead of
@@ -56,19 +55,19 @@ allowing two GPU/camera processes to compete.
 Submit a bounded segmentation request with no agent fallback:
 
 ```bash
-./sam3 "small orange box"
+./sam3-dino "small orange box"
 ```
 
 Check readiness, follow logs, and release the camera with:
 
 ```bash
-./sam3 status
-./sam3 logs
-./sam3 stop
+./sam3-dino status
+./sam3-dino logs
+./sam3-dino stop
 ```
 
-Set `SAM3_RUNTIME_PROJECT` only if the shared no-DINO project moves from
-`/home/team/VLA_Model_Work/SAM3_Projects/SAM3_Without_GroundingDINO`.
+Set `SAM3_RUNTIME_PROJECT` only when the virtual environment, SAM source, and
+checkpoint live in a different project directory.
 DINO mode always uses the calibrated HD720 crop `448,360,384,360` and offline
 model caches. A different resolution, crop, or `--no-crop` is rejected.
 
@@ -113,7 +112,7 @@ curl -X POST \
   'http://127.0.0.1:8765/segment?request=small%20orange%20box&use_agent_fallback=false'
 ```
 
-Use `scripts/mask_client.py --agent-fallback ...` only for a deliberate
+Use `scripts/mask_client_dino.py --agent-fallback ...` only for a deliberate
 diagnostic request.
 
 ## Coordinate and response contract

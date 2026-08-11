@@ -1,5 +1,7 @@
 # Daemon plan — a resident masking service
 
+> This is the detailed implementation history. For normal operation, use the root-level `./sam3` command described in `README.md`; do not mix the old systemd examples below with the Docker-managed service.
+
 Companion to `Second_plan.md`. Solves one problem: in one-shot use, ~95 % of wall-clock is loading SAM 3.1 (3.3 GB) + Qwen before the first mask. Fix: one long-lived process loads the models **once** and holds them warm on the GPU; every "one run, one round" request afterwards is served in seconds. Request semantics don't change — each call still grabs a fresh frame and does a single round.
 
 This service also becomes the natural masking entry point for the Fairino executive later (Second_plan, Milestone D): the executive calls `/segment` and gets masks + depth back as JSON.

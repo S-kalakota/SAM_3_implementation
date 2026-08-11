@@ -19,7 +19,7 @@ from PIL import Image
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-import mask_service  # noqa: E402
+import mask_service_dino as mask_service  # noqa: E402
 import task6_sam31_agent as task6  # noqa: E402
 
 

@@ -1,343 +1,344 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME_PROJECT="${SAM3_RUNTIME_PROJECT:-/home/team/VLA_Model_Work/SAM3_Projects/SAM3_Without_GroundingDINO}"
-RUNTIME_ROOT="$(readlink -f -- "${RUNTIME_PROJECT}")"
-PYTHON_BIN="${RUNTIME_PROJECT}/.venv/bin/python"
-SAM_SOURCE="${RUNTIME_PROJECT}/third_party/sam3"
-SAM_CHECKPOINT="${RUNTIME_PROJECT}/checkpoints/sam3.1/sam3.1_multiplex.pt"
-HF_CACHE_ROOT="${HF_HOME:-/home/team/.cache/huggingface}"
-HOST="${SAM3_DINO_HOST:-127.0.0.1}"
-PORT="${SAM3_DINO_PORT:-8765}"
-HEALTH_URL="http://${HOST}:${PORT}/health"
-START_TIMEOUT="${SAM3_DINO_START_TIMEOUT:-600}"
-RUNTIME_DIR="${PROJECT_ROOT}/outputs/runtime"
-PID_FILE="${RUNTIME_DIR}/dino-mask-service.pid"
-LOG_FILE="${RUNTIME_DIR}/dino-mask-service.log"
-
-cd -- "${PROJECT_ROOT}"
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.mask-service.yml"
+SERVICE_NAME="mask_service"
+HEALTH_URL="${SAM3_HEALTH_URL:-http://127.0.0.1:8765/health}"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+CLIENT_SCRIPT="${PROJECT_ROOT}/scripts/mask_client.py"
+EVALUATION_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_segmentation.py"
+SOAK_SCRIPT="${PROJECT_ROOT}/scripts/segmentation_soak.py"
+INTENT_SHADOW_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_intent_shadow.py"
+IMAGE_PARITY_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_sam_image_parity.py"
+V2_LANGUAGE_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_v2_language.py"
+V2_SYNTHETIC_SCRIPT="${PROJECT_ROOT}/scripts/evaluate_v2_synthetic_scenes.py"
+V2_FROZEN_SCORE_SCRIPT="${PROJECT_ROOT}/scripts/score_v2_frozen_results.py"
+RELATION_CALIBRATION_SCRIPT="${PROJECT_ROOT}/scripts/calibrate_relation_thresholds.py"
+V2_RELEASE_GATES_SCRIPT="${PROJECT_ROOT}/scripts/check_v2_release_gates.py"
+START_TIMEOUT="${SAM3_START_TIMEOUT:-180}"
 
 usage() {
     cat <<'EOF'
-Grounding DINO -> SAM 3.1 -> Qwen segmentation
+SAM 3.1 command-line entry point
 
-Usage:
-  ./sam3 start                         Start DINO and wait until it is healthy
-  ./sam3 "small orange box"            Capture and segment one live frame
-  ./sam3 status                        Print service health
-  ./sam3 logs                          Follow startup/request logs
-  ./sam3 stop                          Stop DINO and release the ZED camera
-  ./sam3 restart                       Restart the DINO service
-  ./sam3 cache-dino                    Download/validate DINO for offline use
+Normal use:
+  ./sam3 "box inside the blue bin"  Qwen interpret, then v2 segment
+  ./sam3 orange and white box       Quotes are optional
+  ./sam3 interpret "..."            Print the sealed v2 intent; no frame capture
 
-Segmentation requests disable the unbounded agent fallback by default. Pass
---agent-fallback only for an intentional diagnostic.
+Service commands:
+  ./sam3 start                      Start and wait until ready
+  ./sam3 status                     Show service health
+  ./sam3 logs                       Follow service logs
+  ./sam3 restart                    Recreate and restart the service
+  ./sam3 stop                       Stop service and release the camera
+  ./sam3 rebuild                    Rebuild after Docker/dependency changes
+
+Validation commands:
+  ./sam3 evaluate [options]         Run a frozen-frame A/B manifest
+  ./sam3 soak [options] REQUEST     Run a no-motion repeated live check
+  ./sam3 intent-shadow [options]    Check the 40-command intent corpus
+  ./sam3 image-parity [options]     Approve the cached image-model switch
+  ./sam3 v2-language [options]      Evaluate the reviewed 120-command corpus
+  ./sam3 v2-synthetic [options]     Check the 60-scene geometry safety fixture
+  ./sam3 score-v2-frozen [...]      Score reviewed saved v2 scene results
+  ./sam3 calibrate-relations [...]  Grid-search labeled relation thresholds
+  ./sam3 v2-release-gates [...]     Build the aggregate rollout approval
+
+Prompt options accepted by the client:
+  --v1                              Use the retained version-1 rollback API
+  --no-agent-fallback               Version-1 direct SAM only
+  --timeout SECONDS                 Override the request timeout
 
 Environment overrides:
-  SAM3_RUNTIME_PROJECT                 Project containing .venv/checkpoint/SAM
-  SAM3_DINO_HOST                       Service host (default 127.0.0.1)
-  SAM3_DINO_PORT                       Service port (default 8765)
-  SAM3_DINO_START_TIMEOUT              Startup timeout in seconds (default 600)
+  SAM3_START_TIMEOUT                Startup wait in seconds (default: 180)
+  SAM3_HEALTH_URL                   Health endpoint URL
+  SAM3_V2_EVALUATION_MODE           Pre-release no-motion v2 evidence mode
+  SAM3_V2_ENABLED                   Production v2 gate (requires approvals)
 EOF
 }
 
-die() {
-    echo "error: $*" >&2
-    exit 1
-}
-
 require_command() {
-    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "Required command not found: $1" >&2
+        exit 1
+    fi
 }
 
-check_timeout() {
-    [[ "${START_TIMEOUT}" =~ ^[1-9][0-9]*$ ]] \
-        || die "SAM3_DINO_START_TIMEOUT must be a positive integer"
-}
-
-check_runtime() {
+check_client_prerequisites() {
     require_command curl
-    [[ -x "${PYTHON_BIN}" ]] \
-        || die "shared Python environment not found: ${PYTHON_BIN}"
-    [[ -d "${SAM_SOURCE}/sam3" ]] \
-        || die "shared SAM source not found: ${SAM_SOURCE}"
-    [[ -f "${SAM_CHECKPOINT}" ]] \
-        || die "shared SAM checkpoint not found: ${SAM_CHECKPOINT}"
-    [[ -e /dev/video0 && -e /dev/video1 ]] \
-        || die "ZED video devices /dev/video0 and /dev/video1 are unavailable"
-    check_timeout
+    if [[ ! -x "${PYTHON_BIN}" ]]; then
+        echo "Python environment not found: ${PYTHON_BIN}" >&2
+        exit 1
+    fi
+    if [[ ! "${START_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "SAM3_START_TIMEOUT must be a positive integer." >&2
+        exit 1
+    fi
 }
 
-check_model_caches() {
-    local dino_cache="${HF_CACHE_ROOT}/hub/models--IDEA-Research--grounding-dino-base"
-    local qwen_cache="${HF_CACHE_ROOT}/hub/models--Qwen--Qwen2.5-VL-7B-Instruct"
-    [[ -d "${dino_cache}/snapshots" ]] \
-        || die "Grounding DINO is not cached; run ./sam3 cache-dino first"
-    [[ -d "${qwen_cache}/snapshots" ]] \
-        || die "Qwen 7B cache not found: ${qwen_cache}"
+check_docker_prerequisites() {
+    require_command docker
+    if ! docker compose version >/dev/null 2>&1; then
+        echo "Docker Compose is not available." >&2
+        exit 1
+    fi
 }
 
-health_json() {
-    curl --fail --silent --show-error --max-time 3 "${HEALTH_URL}"
+compose() {
+    docker compose -f "${COMPOSE_FILE}" "$@"
 }
 
-health_is_dino() {
-    local payload
-    payload="$(health_json 2>/dev/null)" || return 1
-    printf '%s' "${payload}" | "${PYTHON_BIN}" -c '
-import json, sys
-data = json.load(sys.stdin)
-dino = data.get("grounding_dino") or {}
-ok = (
-    data.get("pipeline_mode") == "dino"
-    and data.get("sam_loaded") is True
-    and data.get("camera_open") is True
-    and data.get("qwen_loaded") is True
-    and dino.get("loaded") is True
-)
-raise SystemExit(0 if ok else 1)
-' >/dev/null 2>&1
+service_is_ready() {
+    curl --fail --silent --show-error --max-time 2 "${HEALTH_URL}" >/dev/null 2>&1
 }
 
-other_sam_container_is_running() {
-    command -v docker >/dev/null 2>&1 || return 1
-    docker ps \
-        --filter 'name=^/sam3_mask_service$' \
-        --format '{{.Names}}' 2>/dev/null \
-        | grep -Fxq 'sam3_mask_service'
+compose_service_is_running() {
+    command -v docker >/dev/null 2>&1 \
+        && docker compose -f "${COMPOSE_FILE}" ps --status running --services 2>/dev/null \
+            | grep -Fxq "${SERVICE_NAME}"
 }
 
-managed_pid() {
-    local pid
-    [[ -f "${PID_FILE}" ]] || return 1
-    read -r pid < "${PID_FILE}" || return 1
-    [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || return 1
-    kill -0 "${pid}" 2>/dev/null || return 1
-    [[ "$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)" == "${PROJECT_ROOT}" ]] \
-        || return 1
-    tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null \
-        | grep -Fq 'scripts/mask_service.py' || return 1
-    printf '%s\n' "${pid}"
-}
-
-project_service_pids() {
+native_service_pids() {
     local pid
     while IFS= read -r pid; do
-        [[ -n "${pid}" ]] || continue
-        if [[ "$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)" == "${PROJECT_ROOT}" ]]; then
-            printf '%s\n' "${pid}"
+        if [[ -n "${pid}" ]] \
+            && [[ "$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)" == "${PROJECT_ROOT}" ]]; then
+            echo "${pid}"
         fi
     done < <(pgrep -u "$(id -u)" -f 'python.*scripts/mask_service[.]py' || true)
 }
 
-release_other_sam_service() {
-    local other_launcher="${RUNTIME_ROOT}/sam3"
-    echo "Another SAM service owns port ${PORT} and the ZED camera."
-    if [[ ! -x "${other_launcher}" ]]; then
-        die "cannot stop it safely; expected launcher not found: ${other_launcher}"
+service_runtime() {
+    local native_pids
+    if compose_service_is_running; then
+        echo "Docker Compose"
+        return
     fi
-    echo "Stopping the no-DINO SAM service cleanly..."
-    "${other_launcher}" stop
-    for _ in {1..50}; do
-        if ! health_json >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 0.2
-    done
-    die "port ${PORT} is still occupied after stopping the other SAM service"
-}
-
-print_failure_log() {
-    if [[ -f "${LOG_FILE}" ]]; then
-        echo >&2
-        echo "Last DINO service log lines:" >&2
-        tail -n 100 "${LOG_FILE}" >&2
+    native_pids="$(native_service_pids | paste -sd, -)"
+    if [[ -n "${native_pids}" ]]; then
+        echo "native Python (PID ${native_pids})"
+    elif service_is_ready; then
+        echo "external process"
+    else
+        echo "stopped"
     fi
 }
 
 wait_until_ready() {
-    local pid="$1"
     local elapsed=0
+    echo "Waiting for SAM and the ZED camera to become ready..."
     while (( elapsed < START_TIMEOUT )); do
-        if other_sam_container_is_running; then
-            kill -- "${pid}" 2>/dev/null || true
-            rm -f -- "${PID_FILE}"
-            die "the no-DINO Docker service was restarted by another process during DINO warmup; stop that workflow and retry ./sam3 start"
-        fi
-        if health_is_dino; then
-            echo "Grounding DINO segmentation is ready."
-            echo "Try: ./sam3 \"small orange box\""
+        if service_is_ready; then
+            echo "SAM 3.1 service is ready."
             return 0
-        fi
-        if ! kill -0 "${pid}" 2>/dev/null; then
-            rm -f -- "${PID_FILE}"
-            print_failure_log
-            die "DINO service exited during startup"
-        fi
-        if (( elapsed > 0 && elapsed % 20 == 0 )); then
-            echo "Still warming SAM, Grounding DINO, and Qwen (${elapsed}s)..."
         fi
         sleep 2
         (( elapsed += 2 ))
     done
-    print_failure_log
-    die "DINO service did not become healthy within ${START_TIMEOUT}s"
+
+    echo "Service did not become ready within ${START_TIMEOUT} seconds." >&2
+    compose logs --tail=80 "${SERVICE_NAME}" >&2 || true
+    return 1
 }
 
 start_service() {
-    local pid
-    check_runtime
-    check_model_caches
-    if health_is_dino; then
-        echo "Grounding DINO segmentation is already ready."
+    check_client_prerequisites
+    if service_is_ready; then
+        echo "SAM 3.1 service is already ready via $(service_runtime)."
         return 0
     fi
-    if health_json >/dev/null 2>&1; then
-        release_other_sam_service
-    fi
-    if pid="$(managed_pid 2>/dev/null)"; then
-        echo "Grounding DINO is already starting (PID ${pid})."
-        wait_until_ready "${pid}"
-        return 0
-    fi
-
-    mkdir -p -- "${RUNTIME_DIR}"
-    : > "${LOG_FILE}"
-    echo "Starting Grounding DINO segmentation in the background..."
-    nohup env \
-        HF_HOME="${HF_CACHE_ROOT}" \
-        HF_HUB_OFFLINE=1 \
-        TRANSFORMERS_OFFLINE=1 \
-        PYTHONPATH="${PROJECT_ROOT}/scripts:${SAM_SOURCE}" \
-        "${PYTHON_BIN}" -u scripts/mask_service.py \
-            --host "${HOST}" \
-            --port "${PORT}" \
-            --pipeline-mode dino \
-            --warm-dino \
-            --warm-qwen \
-            --crop 448,360,384,360 \
-            --checkpoint "${SAM_CHECKPOINT}" \
-        >> "${LOG_FILE}" 2>&1 &
-    pid="$!"
-    printf '%s\n' "${pid}" > "${PID_FILE}"
-    echo "PID ${pid}; log ${LOG_FILE}"
-    wait_until_ready "${pid}"
+    check_docker_prerequisites
+    echo "Starting the SAM 3.1 service..."
+    compose up -d "${SERVICE_NAME}"
+    wait_until_ready
 }
 
 stop_service() {
-    local pids=()
+    local native_pids=()
     local pid
-    if pid="$(managed_pid 2>/dev/null)"; then
-        pids+=("${pid}")
-    else
-        mapfile -t pids < <(project_service_pids)
-    fi
-    if (( ${#pids[@]} == 0 )); then
-        rm -f -- "${PID_FILE}"
-        if health_is_dino; then
-            die "DINO is responding but its process is not owned by this project"
-        fi
-        echo "Grounding DINO service is already stopped."
+
+    check_client_prerequisites
+    if compose_service_is_running; then
+        check_docker_prerequisites
+        compose stop "${SERVICE_NAME}"
+        echo "SAM 3.1 Docker service stopped; the ZED camera is released."
         return 0
     fi
 
-    echo "Stopping Grounding DINO process: ${pids[*]}"
-    kill -- "${pids[@]}"
-    for _ in {1..100}; do
-        local running=false
-        for pid in "${pids[@]}"; do
-            if kill -0 "${pid}" 2>/dev/null; then
-                running=true
-                break
+    mapfile -t native_pids < <(native_service_pids)
+    if (( ${#native_pids[@]} > 0 )); then
+        echo "Stopping native SAM 3.1 process: ${native_pids[*]}"
+        kill -- "${native_pids[@]}"
+        for _ in {1..50}; do
+            local any_running=false
+            for pid in "${native_pids[@]}"; do
+                if [[ -d "/proc/${pid}" ]]; then
+                    any_running=true
+                    break
+                fi
+            done
+            if [[ "${any_running}" == false ]]; then
+                echo "SAM 3.1 native service stopped; the ZED camera is released."
+                return 0
             fi
+            sleep 0.2
         done
-        if [[ "${running}" == false ]]; then
-            rm -f -- "${PID_FILE}"
-            echo "Grounding DINO stopped; the ZED camera is released."
-            return 0
-        fi
-        sleep 0.2
-    done
-    die "DINO service did not stop cleanly; refusing to force-kill it"
+        echo "Native service did not stop cleanly; refusing to force-kill it." >&2
+        return 1
+    fi
+
+    if service_is_ready; then
+        echo "A service is responding at ${HEALTH_URL}, but this project does not own its process." >&2
+        return 1
+    fi
+    echo "SAM 3.1 service is already stopped."
+}
+
+restart_service() {
+    stop_service
+    check_docker_prerequisites
+    echo "Starting a fresh SAM 3.1 Docker service..."
+    compose up -d --force-recreate "${SERVICE_NAME}"
+    wait_until_ready
+}
+
+rebuild_service() {
+    stop_service
+    check_docker_prerequisites
+    echo "Rebuilding the SAM 3.1 service image..."
+    compose build "${SERVICE_NAME}"
+    compose up -d --force-recreate "${SERVICE_NAME}"
+    wait_until_ready
 }
 
 show_status() {
-    local payload
-    if ! payload="$(health_json 2>/dev/null)"; then
-        echo "Grounding DINO service is not responding at ${HEALTH_URL}." >&2
-        exit 1
+    check_client_prerequisites
+    if service_is_ready; then
+        echo "SAM 3.1 service is ready via $(service_runtime):"
+        curl --fail --silent --show-error "${HEALTH_URL}" | "${PYTHON_BIN}" -m json.tool
+        return 0
     fi
-    if ! printf '%s' "${payload}" | "${PYTHON_BIN}" -c '
-import json, sys
-data = json.load(sys.stdin)
-raise SystemExit(0 if data.get("pipeline_mode") == "dino" else 1)
-'; then
-        echo "A service is responding at ${HEALTH_URL}, but it is not the Grounding DINO service." >&2
-        echo "Run ./sam3 start after the no-DINO workflow has stopped restarting its container." >&2
-        exit 1
+
+    echo "SAM 3.1 service is not ready."
+    if command -v docker >/dev/null 2>&1; then
+        compose ps "${SERVICE_NAME}" || true
     fi
-    printf '%s' "${payload}" | "${PYTHON_BIN}" -m json.tool
+    return 1
 }
 
-follow_logs() {
-    [[ -f "${LOG_FILE}" ]] || die "no DINO service log exists yet; run ./sam3 start"
-    tail -n 100 -f "${LOG_FILE}"
+show_logs() {
+    local native_pids
+    if compose_service_is_running; then
+        check_docker_prerequisites
+        compose logs --follow --tail=200 "${SERVICE_NAME}"
+        return
+    fi
+    native_pids="$(native_service_pids | paste -sd, -)"
+    if [[ -n "${native_pids}" ]]; then
+        echo "The service is a native foreground process (PID ${native_pids})."
+        echo "Its live output is attached to the terminal that started it."
+        return
+    fi
+    echo "SAM 3.1 service is not running."
 }
 
-cache_dino() {
-    [[ -x "${PYTHON_BIN}" ]] \
-        || die "shared Python environment not found: ${PYTHON_BIN}"
-    env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
-        HF_HOME="${HF_CACHE_ROOT}" \
-        "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/cache_grounding_dino.py" \
-        --model IDEA-Research/grounding-dino-base
-}
-
-run_request() {
-    (( $# > 0 )) || die "provide a target, for example: ./sam3 \"small orange box\""
+submit_request() {
+    if (( $# == 0 )); then
+        echo "Provide an instruction, for example: ./sam3 \"orange box\"" >&2
+        exit 2
+    fi
     start_service
-    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/mask_client.py" \
-        --timeout 600 "$@"
+    "${PYTHON_BIN}" "${CLIENT_SCRIPT}" "$@"
 }
 
-command_name="${1:-help}"
+if (( $# == 0 )); then
+    usage
+    exit 0
+fi
+
+command_name="$1"
 case "${command_name}" in
     start)
         shift
-        (( $# == 0 )) || die "./sam3 start takes no arguments"
-        start_service
-        ;;
-    stop)
-        shift
-        (( $# == 0 )) || die "./sam3 stop takes no arguments"
-        stop_service
-        ;;
-    restart)
-        shift
-        (( $# == 0 )) || die "./sam3 restart takes no arguments"
-        stop_service
         start_service
         ;;
     status)
         shift
-        (( $# == 0 )) || die "./sam3 status takes no arguments"
         show_status
         ;;
     logs)
         shift
-        (( $# == 0 )) || die "./sam3 logs takes no arguments"
-        follow_logs
+        show_logs
         ;;
-    cache-dino)
+    restart)
         shift
-        (( $# == 0 )) || die "./sam3 cache-dino takes no arguments"
-        cache_dino
+        restart_service
+        ;;
+    stop)
+        shift
+        stop_service
+        ;;
+    rebuild)
+        shift
+        rebuild_service
+        ;;
+    ask|run)
+        shift
+        submit_request "$@"
+        ;;
+    interpret)
+        shift
+        if (( $# == 0 )); then
+            echo "Provide an instruction, for example: ./sam3 interpret \"box inside the bin\"" >&2
+            exit 2
+        fi
+        start_service
+        "${PYTHON_BIN}" "${CLIENT_SCRIPT}" --interpret-only "$@"
+        ;;
+    evaluate)
+        shift
+        start_service
+        "${PYTHON_BIN}" "${EVALUATION_SCRIPT}" "$@"
+        ;;
+    soak)
+        shift
+        start_service
+        "${PYTHON_BIN}" "${SOAK_SCRIPT}" "$@"
+        ;;
+    intent-shadow)
+        shift
+        "${PYTHON_BIN}" "${INTENT_SHADOW_SCRIPT}" "$@"
+        ;;
+    image-parity)
+        shift
+        "${PYTHON_BIN}" "${IMAGE_PARITY_SCRIPT}" "$@"
+        ;;
+    v2-language)
+        shift
+        "${PYTHON_BIN}" "${V2_LANGUAGE_SCRIPT}" "$@"
+        ;;
+    v2-synthetic)
+        shift
+        "${PYTHON_BIN}" "${V2_SYNTHETIC_SCRIPT}" "$@"
+        ;;
+    score-v2-frozen)
+        shift
+        "${PYTHON_BIN}" "${V2_FROZEN_SCORE_SCRIPT}" "$@"
+        ;;
+    calibrate-relations)
+        shift
+        "${PYTHON_BIN}" "${RELATION_CALIBRATION_SCRIPT}" "$@"
+        ;;
+    v2-release-gates)
+        shift
+        "${PYTHON_BIN}" "${V2_RELEASE_GATES_SCRIPT}" "$@"
         ;;
     help|-h|--help)
         usage
         ;;
     *)
-        run_request "$@"
+        submit_request "$@"
         ;;
 esac

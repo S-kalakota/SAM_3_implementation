@@ -23,6 +23,7 @@ DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/task5_zed_live_prompt.json"
 DEFAULT_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live.png"
 DEFAULT_STEREO_OVERLAY_OUTPUT = PROJECT_ROOT / "outputs/result_live_stereo.png"
 DEFAULT_CROP = (448, 360, 384, 360)
+DEFAULT_PRESENCE_CONF_THRESH = 0.10
 
 
 RESOLUTION_NAMES = ("HD2K", "HD1200", "HD1080", "HD720", "SVGA", "VGA", "AUTO")
@@ -127,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--presence-conf-threshold",
-        default=0.25,
+        default=DEFAULT_PRESENCE_CONF_THRESH,
         type=float,
         help="Presence gate: drop masks with scores at or below this value.",
     )
