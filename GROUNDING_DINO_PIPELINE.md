@@ -9,6 +9,7 @@ deterministic request parser
   -> at most three deduplicated boxes
   -> one SAM box prompt per proposal on one image state
   -> one fail-closed Qwen2.5-VL-7B verification stage
+  -> DINO-center-anchored ZED depth-discontinuity refinement
   -> existing spatial/depth selection
 ```
 
@@ -87,6 +88,7 @@ The relevant service options are:
 --dino-nms-iou FLOAT                 default: 0.50
 --dino-max-proposals INTEGER         default/max: 3
 --dino-box-padding FLOAT             default: 0.05
+--depth-refinement / --no-depth-refinement
 --warm-dino
 ```
 
@@ -107,8 +109,22 @@ pixels outside the padded support box are removed, the component best anchored
 to the original box is retained, and only sufficiently large secondary
 components overlapping that box survive. Geometry and SAM confidence jointly
 select the best raw alternative. The refiner never fills holes or adds pixels,
-and both raw and refined masks are saved for audit. If DINO has
-no usable proposal or no score/area-gated box mask, the
+and both raw and refined masks are saved for audit.
+
+After Qwen approves candidate identity, the service samples registered ZED
+depth from the center patch of the original DINO box. This is deliberately not
+the mask median: a hollow SAM mask can contain more shelf/background edge
+pixels than object pixels. Valid mask pixels are retained only when they are
+connected to that object-depth reference without crossing an adaptive local
+depth jump (at least 4 cm, scaled for range and center-patch noise). The method
+also bounds total drift from the reference, preserves unknown-depth pixels that
+remain attached to accepted pixels, reruns the existing geometric component
+cleanup, never adds pixels or fills holes, and returns the original mask when
+depth is sparse, the center reference is unstable, or less than 20% would
+survive. Set `SAM3_DINO_DEPTH_REFINEMENT=0` for a deliberate A/B run; the
+default is enabled and is reported by `/health`.
+
+If DINO has no usable proposal or no score/area-gated box mask, the
 service makes one legacy SAM text call and verifies that result through the same
 fail-closed policy using the legacy boundary input because no DINO box exists.
 A Qwen `no_match`, low-confidence answer, malformed answer, model
@@ -129,12 +145,13 @@ diagnostic request.
 
 ## Coordinate and response contract
 
-The combined `sam_json` retains the existing crop-local SAM structure:
+The combined `sam_json` retains the existing crop-local SAM structure and is
+the pre-depth SAM/2D-geometry record:
 
 - `orig_img_w=384`, `orig_img_h=360`
 - index-compatible `pred_masks`, mask-derived normalized `pred_boxes`, and
   `pred_scores`
-- `presence_gate.kept_indices` indexing those arrays directly
+- `presence_gate.kept_indices` preserving the corresponding source-array indices
 
 Candidate order follows proposal order even when SAM scores differ. Each kept
 candidate carries its DINO phrase/score, original and padded proposal boxes,
@@ -142,13 +159,16 @@ SAM prompt/score, mask geometry, and per-prompt latency. For the standard crop,
 crop point `(u,v)` maps to full-camera point `(u+448,v+360)`. The response also
 provides `selected_mask.center_xy_crop_pixels`,
 `selected_mask.center_xy_full_pixels`, and the crop-to-full offset when exactly
-one target survives.
+one target survives. The final depth-refined binary mask is exposed through
+`selected_mask.mask_artifact` and its full decision record through
+`selected_mask.depth_refinement`; final overlay, area, center, object depth, and
+XYZ centroid all use this refined mask.
 
 All pre-existing robot-consumed fields remain present, including `num_kept`,
 `scores`, `presence_gate`, `object_depth`, `zed_frame`, `sam_json`, `selection`,
 and `result_json`. New top-level fields include `pipeline_mode`,
 `candidate_generation`, `proposal_provenance`, `dino_proposals`,
-`combined_candidates`, `selected_mask`, and `stage_timings`.
+`combined_candidates`, `depth_refinement`, `selected_mask`, and `stage_timings`.
 
 ## Request artifacts
 
@@ -167,13 +187,18 @@ dino_qwen_candidate_zooms.png
 dino_qwen_clean_dino_crops.png
 dino_qwen_candidates.json
 dino_qwen_verification.json
+dino_depth_refinement.json
+depth_crop_m.npy
+depth_refined_mask_001.png ... depth_refined_mask_003.png
+depth_refinement_001.png ... depth_refinement_003.png
 overlay_dino.png
 result.json
 ```
 
+The depth diagnostic colors retained pixels green and removed pixels red.
 Legacy fallback artifacts use the `legacy_` prefix. `stage_timings` records
 capture, parsing, DINO, every SAM box prompt, legacy SAM if used, Qwen inference,
-spatial selection, depth extraction, and total request time.
+depth refinement, spatial selection, depth extraction, and total request time.
 
 ## Validation before robot handoff
 

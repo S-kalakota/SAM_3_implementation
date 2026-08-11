@@ -16,6 +16,13 @@ Run the bounded DINO path with:
 ./sam3-dino stop
 ```
 
+DINO mode also trims Qwen-approved masks at registered ZED depth
+discontinuities, using the center of the original DINO box as the object-depth
+anchor. It is conservative and leaves the mask unchanged when depth evidence
+is unreliable. For an A/B comparison, restart once with
+`SAM3_DINO_DEPTH_REFINEMENT=0 ./sam3-dino restart`; restart normally to
+re-enable it.
+
 See `GROUNDING_DINO_PIPELINE.md` for its proposal thresholds, artifacts, and
 validation gates.
 

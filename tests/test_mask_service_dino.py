@@ -36,6 +36,7 @@ def make_args(**updates):
         "min_area": 20,
         "selection_min_valid_depth_fraction": 0.8,
         "selection_roi": None,
+        "depth_refinement": True,
         "qwen_model": "Qwen/Qwen2.5-VL-7B-Instruct",
         "qwen_device_map": "auto",
         "allow_qwen_downloads": False,
@@ -416,6 +417,49 @@ class SamBoxPromptTests(unittest.TestCase):
         self.assertFalse(refined_mask[7, 7])
         self.assertTrue(refined_mask[50, 60])
         self.assertGreater(provenance["mask_geometry_score"], 0.9)
+
+
+class DepthRefinementIntegrationTests(unittest.TestCase):
+    def test_verified_dino_mask_is_cut_and_artifacts_are_auditable(self) -> None:
+        mask = np.zeros((80, 120), dtype=bool)
+        mask[20:60, 20:100] = True
+        depth = np.full(mask.shape, 1.0, dtype=np.float32)
+        depth[20:60, 70:100] = 1.5
+        candidate_record = candidate(0, mask)
+        candidate_record["proposal_provenance"] = {
+            "candidate_index": 0,
+            "dino_original_box_xyxy_crop_pixels": [20, 20, 100, 60],
+            "sam_prompt_box_xyxy_crop_pixels": [20, 20, 100, 60],
+            "mask_artifact": "/tmp/pre_depth_mask.png",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            refined, updated, manifest = (
+                mask_service.refine_verified_dino_masks_with_depth(
+                    kept=[(mask, 0.9)],
+                    candidates=[candidate_record],
+                    rgb_np=np.zeros((80, 120, 3), dtype=np.uint8),
+                    depth_np=depth,
+                    req_dir=Path(directory),
+                    args=make_args(min_area=20),
+                    enabled=True,
+                )
+            )
+            final_mask = refined[0][0]
+            provenance = updated[0]["proposal_provenance"]
+            self.assertTrue(Path(manifest["artifact"]).is_file())
+            self.assertTrue(Path(manifest["depth_artifact"]).is_file())
+            self.assertTrue(Path(provenance["mask_artifact"]).is_file())
+            self.assertTrue(
+                Path(provenance["depth_refinement_overlay_artifact"]).is_file()
+            )
+
+        self.assertEqual(manifest["applied_count"], 1)
+        self.assertTrue(final_mask[30, 40])
+        self.assertFalse(final_mask[30, 80])
+        self.assertEqual(updated[0]["area_pixels"], int(final_mask.sum()))
+        self.assertEqual(provenance["geometry_mask_artifact"], "/tmp/pre_depth_mask.png")
+        self.assertEqual(provenance["depth_refinement"]["status"], "applied")
 
 
 class DirectPipelineTests(unittest.TestCase):
