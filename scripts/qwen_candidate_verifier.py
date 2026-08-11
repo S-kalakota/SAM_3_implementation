@@ -18,6 +18,17 @@ REQUIRED_RESPONSE_KEYS = {
     "confidence",
     "reason",
 }
+IDENTITY_RESPONSE_KEYS = {
+    "decision",
+    "selected_candidate_ids",
+    "candidate_assessments",
+    "confidence",
+}
+IDENTITY_ASSESSMENT_KEYS = {
+    "candidate_id",
+    "most_likely_object",
+    "matches_target",
+}
 MASK_COLORS_RGB = (
     (255, 64, 64),
     (64, 192, 255),
@@ -30,6 +41,30 @@ MASK_COLORS_RGB = (
 
 class VerifierResponseError(ValueError):
     """Raised when Qwen does not return the required verifier schema."""
+
+
+def _identity_candidate_id(value: Any, *, field: str) -> int:
+    """Normalize an unambiguous identity ID while rejecting ambiguous text."""
+
+    if isinstance(value, bool):
+        raise VerifierResponseError(f"{field} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        return int(value)
+    raise VerifierResponseError(f"{field} must be an integer")
+
+
+def _identity_boolean(value: Any, *, field: str) -> bool:
+    """Normalize exact JSON-boolean strings emitted by Qwen."""
+
+    if isinstance(value, bool):
+        return value
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise VerifierResponseError(f"{field} must be a boolean")
 
 
 def parse_verifier_response(text: str, candidate_count: int) -> dict[str, Any]:
@@ -91,6 +126,143 @@ def parse_verifier_response(text: str, candidate_count: int) -> dict[str, Any]:
         "selected_candidate_ids": sorted(selected),
         "confidence": confidence,
         "reason": reason.strip(),
+    }
+
+
+def parse_identity_verifier_response(
+    text: str,
+    candidate_count: int,
+) -> dict[str, Any]:
+    """Parse an identity-only response and enforce internal consistency."""
+
+    if isinstance(candidate_count, bool) or not isinstance(candidate_count, int):
+        raise ValueError("candidate_count must be an integer")
+    if candidate_count < 1:
+        raise ValueError("candidate_count must be positive")
+    if not isinstance(text, str) or not text.strip():
+        raise VerifierResponseError("response is empty")
+    try:
+        value = json.loads(text.strip())
+    except json.JSONDecodeError as exc:
+        raise VerifierResponseError(f"response is not JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise VerifierResponseError("response must be a JSON object")
+    keys = set(value)
+    if keys != IDENTITY_RESPONSE_KEYS:
+        missing = sorted(IDENTITY_RESPONSE_KEYS - keys)
+        extra = sorted(keys - IDENTITY_RESPONSE_KEYS)
+        raise VerifierResponseError(
+            f"response keys are invalid; missing={missing}, extra={extra}"
+        )
+
+    decision = value["decision"]
+    if decision not in {"select", "no_match"}:
+        raise VerifierResponseError("decision must be 'select' or 'no_match'")
+    selected_values = value["selected_candidate_ids"]
+    if not isinstance(selected_values, list):
+        raise VerifierResponseError("selected_candidate_ids must be a list")
+    selected = [
+        _identity_candidate_id(item, field="candidate ID")
+        for item in selected_values
+    ]
+    if len(selected) != len(set(selected)):
+        raise VerifierResponseError("candidate IDs must be unique")
+    if any(item < 1 or item > candidate_count for item in selected):
+        raise VerifierResponseError(
+            f"candidate IDs must be in the range 1..{candidate_count}"
+        )
+
+    assessments = value["candidate_assessments"]
+    if not isinstance(assessments, list):
+        raise VerifierResponseError("candidate_assessments must be a list")
+    parsed_assessments = []
+    seen_ids = set()
+    matching_ids = []
+    for assessment in assessments:
+        if not isinstance(assessment, dict):
+            raise VerifierResponseError("each candidate assessment must be an object")
+        assessment_keys = set(assessment)
+        if assessment_keys != IDENTITY_ASSESSMENT_KEYS:
+            missing = sorted(IDENTITY_ASSESSMENT_KEYS - assessment_keys)
+            extra = sorted(assessment_keys - IDENTITY_ASSESSMENT_KEYS)
+            raise VerifierResponseError(
+                "candidate assessment keys are invalid; "
+                f"missing={missing}, extra={extra}"
+            )
+        candidate_id = _identity_candidate_id(
+            assessment["candidate_id"],
+            field="assessment candidate_id",
+        )
+        if candidate_id < 1 or candidate_id > candidate_count:
+            raise VerifierResponseError(
+                f"assessment candidate_id must be in 1..{candidate_count}"
+            )
+        if candidate_id in seen_ids:
+            raise VerifierResponseError("assessment candidate IDs must be unique")
+        seen_ids.add(candidate_id)
+        label = assessment["most_likely_object"]
+        if not isinstance(label, str) or not label.strip():
+            raise VerifierResponseError(
+                "most_likely_object must be a non-empty string"
+            )
+        matches_target = _identity_boolean(
+            assessment["matches_target"],
+            field="matches_target",
+        )
+        if matches_target:
+            matching_ids.append(candidate_id)
+        parsed_assessments.append(
+            {
+                "candidate_id": candidate_id,
+                "most_likely_object": label.strip(),
+                "matches_target": matches_target,
+            }
+        )
+    expected_ids = set(range(1, candidate_count + 1))
+    if seen_ids != expected_ids:
+        raise VerifierResponseError(
+            "candidate_assessments must contain every candidate exactly once"
+        )
+
+    selected = sorted(selected)
+    matching_ids = sorted(matching_ids)
+    if selected != matching_ids:
+        raise VerifierResponseError(
+            "selected_candidate_ids must exactly match assessments with "
+            "matches_target=true"
+        )
+    if decision == "select" and not selected:
+        raise VerifierResponseError("select requires at least one candidate ID")
+    if decision == "no_match" and selected:
+        raise VerifierResponseError("no_match requires an empty candidate list")
+
+    confidence_value = value["confidence"]
+    if isinstance(confidence_value, bool) or not isinstance(
+        confidence_value, (int, float)
+    ):
+        raise VerifierResponseError("confidence must be a number")
+    confidence = float(confidence_value)
+    if not np.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        raise VerifierResponseError("confidence must be in [0, 1]")
+    assessment_reason = "; ".join(
+        "candidate "
+        f"{assessment['candidate_id']}: {assessment['most_likely_object']} "
+        f"({'matches target' if assessment['matches_target'] else 'not target'})"
+        for assessment in sorted(
+            parsed_assessments,
+            key=lambda item: item["candidate_id"],
+        )
+    )
+
+    return {
+        "decision": decision,
+        "selected_candidate_ids": selected,
+        "candidate_assessments": sorted(
+            parsed_assessments,
+            key=lambda item: item["candidate_id"],
+        ),
+        "confidence": confidence,
+        "reason": f"Identity assessments: {assessment_reason}.",
     }
 
 
@@ -269,6 +441,206 @@ def render_candidate_zooms(
     }
 
 
+def render_clean_dino_candidate_crops(
+    rgb_np: np.ndarray,
+    candidate_records: list[dict[str, Any]],
+    output_path: Path,
+    *,
+    context_padding_fraction: float = 0.25,
+) -> dict[str, Any]:
+    """Render clean, labeled crops around the original Grounding DINO boxes.
+
+    Candidate labels are placed in a header outside each crop. No tint, contour,
+    rectangle, or other annotation is drawn over the camera pixels Qwen inspects.
+    """
+
+    if rgb_np.ndim != 3 or rgb_np.shape[2] != 3:
+        raise ValueError(f"Expected RGB image HxWx3, got {rgb_np.shape}")
+    if not candidate_records:
+        raise ValueError("At least one candidate record is required")
+    if not 0.0 <= context_padding_fraction <= 1.0:
+        raise ValueError("context_padding_fraction must be in [0, 1]")
+
+    tile_width = 384
+    tile_height = 300
+    header_height = 40
+    columns = min(2, len(candidate_records))
+    rows = math.ceil(len(candidate_records) / columns)
+    sheet = np.full(
+        (rows * tile_height, columns * tile_width, 3),
+        28,
+        dtype=np.uint8,
+    )
+    rendered_records = []
+    image_height, image_width = rgb_np.shape[:2]
+
+    for position, record in enumerate(candidate_records):
+        expected_id = position + 1
+        candidate_id = record.get("candidate_id")
+        if candidate_id != expected_id:
+            raise ValueError(
+                "candidate records must use contiguous one-based IDs in order"
+            )
+        box = record.get("dino_box_xyxy_crop_pixels")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            raise ValueError(
+                f"Candidate {candidate_id} is missing its original DINO box"
+            )
+        try:
+            x0, y0, x1, y1 = (float(value) for value in box)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Candidate {candidate_id} has a non-numeric DINO box"
+            ) from exc
+        if not all(np.isfinite(value) for value in (x0, y0, x1, y1)):
+            raise ValueError(f"Candidate {candidate_id} has a non-finite DINO box")
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError(f"Candidate {candidate_id} has an invalid DINO box")
+
+        box_width = x1 - x0
+        box_height = y1 - y0
+        padding = max(
+            12,
+            int(round(context_padding_fraction * max(box_width, box_height))),
+        )
+        crop_x0 = max(0, int(math.floor(x0)) - padding)
+        crop_y0 = max(0, int(math.floor(y0)) - padding)
+        crop_x1 = min(image_width, int(math.ceil(x1)) + padding)
+        crop_y1 = min(image_height, int(math.ceil(y1)) + padding)
+        if crop_x1 <= crop_x0 or crop_y1 <= crop_y0:
+            raise ValueError(f"Candidate {candidate_id} produced an empty crop")
+        crop_rgb = rgb_np[crop_y0:crop_y1, crop_x0:crop_x1]
+
+        available_width = tile_width - 16
+        available_height = tile_height - header_height - 12
+        scale = min(
+            available_width / crop_rgb.shape[1],
+            available_height / crop_rgb.shape[0],
+        )
+        resized_width = max(1, int(round(crop_rgb.shape[1] * scale)))
+        resized_height = max(1, int(round(crop_rgb.shape[0] * scale)))
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        rendered_crop = cv2.resize(
+            crop_rgb,
+            (resized_width, resized_height),
+            interpolation=interpolation,
+        )
+
+        row = position // columns
+        column = position % columns
+        tile_x = column * tile_width
+        tile_y = row * tile_height
+        image_x = tile_x + (tile_width - resized_width) // 2
+        image_y = tile_y + header_height + (available_height - resized_height) // 2
+        sheet[
+            image_y : image_y + resized_height,
+            image_x : image_x + resized_width,
+        ] = rendered_crop
+        cv2.putText(
+            sheet,
+            f"Candidate {candidate_id}",
+            (tile_x + 12, tile_y + 27),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (240, 240, 240),
+            2,
+            cv2.LINE_AA,
+        )
+        rendered_records.append(
+            {
+                "candidate_id": candidate_id,
+                "dino_box_xyxy_crop_pixels": [x0, y0, x1, y1],
+                "clean_crop_xyxy_crop_pixels": [
+                    crop_x0,
+                    crop_y0,
+                    crop_x1,
+                    crop_y1,
+                ],
+            }
+        )
+
+    output_path = output_path.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output_path), sheet[:, :, ::-1]):
+        raise OSError(f"Failed to write clean DINO candidate crops: {output_path}")
+    return {
+        "output": str(output_path),
+        "num_candidates_drawn": len(candidate_records),
+        "label_indexing": "one_based",
+        "input_mode": "clean_dino_box_crops",
+        "candidates": rendered_records,
+    }
+
+
+def build_identity_verifier_messages(
+    *,
+    request: str,
+    target_phrase: str,
+    selector: str | None,
+    frame_path: Path,
+    candidate_crop_path: Path,
+    candidate_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build the clean-crop, identity-only Grounding DINO verifier prompt."""
+
+    candidate_ids = [int(record["candidate_id"]) for record in candidate_records]
+    system_prompt = (
+        "You are the semantic identity verifier for a robot pick target. Image 1 "
+        "is the unmodified camera crop. Image 2 is a sheet of clean camera crops "
+        "made from Grounding DINO boxes. Candidate labels appear only in the dark "
+        "header outside each crop; no segmentation mask, tint, contour, or rectangle "
+        "is drawn over the objects. For every candidate, identify the single most "
+        "likely primary physical object framed by that crop. Then decide whether that "
+        "primary object is one movable instance of the requested semantic target. A "
+        "requested object merely visible in the background or inside a crop whose "
+        "primary object is a shelf, bin, cart, robot, fixture, or larger surrounding "
+        "structure is not a match. Use visible colors, shape, material, printed text, "
+        "and logos as evidence. Do not judge SAM mask boundaries, segmentation "
+        "quality, depth quality, graspability, or robot motion; separate deterministic "
+        "gates handle those concerns. Do not apply relative selectors such as topmost "
+        "or rightmost; deterministic geometry applies them after semantic identity. "
+        "Return JSON only with exactly these keys: decision, selected_candidate_ids, "
+        "candidate_assessments, confidence. candidate_assessments must contain "
+        "one object for every candidate with exactly candidate_id, most_likely_object, "
+        "and matches_target. most_likely_object must name what you actually see, not "
+        "just repeat the request. selected_candidate_ids must exactly equal the IDs "
+        "whose matches_target value is true. decision must be select when that list is "
+        "non-empty and no_match when it is empty. confidence must be a number from 0 "
+        "to 1. Candidate IDs must be JSON integers without quotes. matches_target must "
+        "be a JSON boolean true or false without quotes. Do not use markdown or add "
+        "other text. The response is already prefixed "
+        "with the JSON text {\"decision\":. Continue with a quoted decision value and "
+        "the remaining keys, then close the object. Do not repeat the prefix."
+    )
+    selector_text = selector if selector is not None else "none"
+    user_text = (
+        f"Original robot request: {request!r}. Semantic target phrase: "
+        f"{target_phrase!r}. Deferred spatial selector: {selector_text!r}. "
+        f"Candidate IDs shown in Image 2: {candidate_ids}. Inspect each clean crop, "
+        "name its most likely primary object, and mark whether it matches the semantic "
+        "target. Think silently, then return only the required JSON object."
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Image 1: unmodified camera crop."},
+                {"type": "image", "image": str(frame_path)},
+                {
+                    "type": "text",
+                    "text": (
+                        "Image 2: clean Grounding DINO candidate crops with labels "
+                        "outside the camera pixels."
+                    ),
+                },
+                {"type": "image", "image": str(candidate_crop_path)},
+                {"type": "text", "text": user_text},
+            ],
+        },
+    ]
+
+
 def build_verifier_messages(
     *,
     request: str,
@@ -347,6 +719,131 @@ def build_verifier_messages(
             ],
         },
     ]
+
+
+def run_identity_verifier(
+    *,
+    request: str,
+    target_phrase: str,
+    selector: str | None,
+    frame_path: Path,
+    candidate_crop_path: Path,
+    candidate_records: list[dict[str, Any]],
+    send_generate_request: Callable[[list[dict[str, Any]]], str],
+    min_select_confidence: float,
+) -> dict[str, Any]:
+    """Ask Qwen to classify clean DINO crops and fail closed on uncertainty."""
+
+    if not 0.0 <= min_select_confidence <= 1.0:
+        raise ValueError("min_select_confidence must be in [0, 1]")
+    if not candidate_records:
+        raise ValueError("candidate_records must not be empty")
+
+    messages = build_identity_verifier_messages(
+        request=request,
+        target_phrase=target_phrase,
+        selector=selector,
+        frame_path=frame_path,
+        candidate_crop_path=candidate_crop_path,
+        candidate_records=candidate_records,
+    )
+    attempts = []
+    for attempt_number in (1, 2):
+        try:
+            raw = send_generate_request(messages)
+        except Exception as exc:
+            attempts.append(
+                {
+                    "attempt": attempt_number,
+                    "raw_response": None,
+                    "error": repr(exc),
+                }
+            )
+            return {
+                "status": "error",
+                "decision": None,
+                "selected_candidate_ids": [],
+                "model_selected_candidate_ids": [],
+                "candidate_assessments": [],
+                "confidence": None,
+                "reason": f"Qwen identity verifier inference failed: {exc!r}",
+                "attempts": attempts,
+            }
+        try:
+            parsed = parse_identity_verifier_response(
+                raw,
+                len(candidate_records),
+            )
+        except VerifierResponseError as exc:
+            attempts.append(
+                {
+                    "attempt": attempt_number,
+                    "raw_response": raw,
+                    "error": str(exc),
+                }
+            )
+            if attempt_number == 1:
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": str(raw)[:1500]},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Invalid identity response: {exc}. Retry once. Return "
+                                "exactly one JSON object with only decision, "
+                                "selected_candidate_ids, candidate_assessments, "
+                                "confidence. Include every candidate exactly "
+                                "once in candidate_assessments. Each assessment must "
+                                "contain only candidate_id, most_likely_object, and "
+                                "matches_target. selected_candidate_ids must exactly "
+                                "match the true matches_target assessments. Use JSON "
+                                "integers for IDs and unquoted JSON true/false values. The "
+                                "response is already prefixed with {\"decision\":. "
+                                "Continue the object without repeating that prefix."
+                            ),
+                        },
+                    ]
+                )
+                continue
+            return {
+                "status": "error",
+                "decision": None,
+                "selected_candidate_ids": [],
+                "model_selected_candidate_ids": [],
+                "candidate_assessments": [],
+                "confidence": None,
+                "reason": "Qwen identity verifier returned invalid JSON twice",
+                "attempts": attempts,
+            }
+
+        attempts.append(
+            {
+                "attempt": attempt_number,
+                "raw_response": raw,
+                "error": None,
+            }
+        )
+        if parsed["decision"] == "no_match":
+            status = "no_match"
+            selected = []
+        elif parsed["confidence"] < min_select_confidence:
+            status = "low_confidence"
+            selected = []
+        else:
+            status = "selected"
+            selected = parsed["selected_candidate_ids"]
+        return {
+            "status": status,
+            "decision": parsed["decision"],
+            "selected_candidate_ids": selected,
+            "model_selected_candidate_ids": parsed["selected_candidate_ids"],
+            "candidate_assessments": parsed["candidate_assessments"],
+            "confidence": parsed["confidence"],
+            "reason": parsed["reason"],
+            "attempts": attempts,
+        }
+
+    raise AssertionError("unreachable identity verifier retry state")
 
 
 def run_visual_verifier(

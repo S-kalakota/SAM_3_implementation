@@ -80,6 +80,82 @@ def accepted_verification(kept, candidates):
     )
 
 
+class QwenVerificationInputTests(unittest.TestCase):
+    def test_dino_candidates_use_clean_identity_crops(self) -> None:
+        mask = one_mask()
+        kept = [(mask, 0.9)]
+        candidate_record = candidate(0, mask)
+        candidate_record["proposal_provenance"] = {
+            "proposal_id": 1,
+            "dino_phrase": "orange and grey box",
+            "dino_score": 0.8,
+            "sam_prompt_box_xyxy_crop_pixels": [8.0, 18.0, 52.0, 42.0],
+            "dino_original_box_xyxy_crop_pixels": [10.0, 20.0, 50.0, 40.0],
+        }
+        identity_result = {
+            "status": "selected",
+            "decision": "select",
+            "selected_candidate_ids": [1],
+            "model_selected_candidate_ids": [1],
+            "candidate_assessments": [
+                {
+                    "candidate_id": 1,
+                    "most_likely_object": "orange and grey box",
+                    "matches_target": True,
+                }
+            ],
+            "confidence": 0.95,
+            "reason": "candidate 1 is the requested box",
+            "attempts": [],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            request_dir = Path(directory)
+            frame_path = request_dir / "frame.png"
+            Image.fromarray(np.zeros((360, 384, 3), dtype=np.uint8)).save(
+                frame_path
+            )
+            with (
+                mock.patch.object(
+                    mask_service.candidate_verifier,
+                    "run_identity_verifier",
+                    return_value=identity_result,
+                ) as identity_call,
+                mock.patch.object(
+                    mask_service.candidate_verifier,
+                    "run_visual_verifier",
+                ) as legacy_call,
+            ):
+                selected, updated, verification = (
+                    mask_service.verify_candidates_with_qwen(
+                        request="pick up the orange and grey box",
+                        target_phrase="orange and grey box",
+                        selector=None,
+                        rgb_np=np.zeros((360, 384, 3), dtype=np.uint8),
+                        frame_path=frame_path,
+                        req_dir=request_dir,
+                        artifact_stem="dino",
+                        kept=kept,
+                        candidates=[candidate_record],
+                        args=make_args(),
+                    )
+                )
+
+        identity_call.assert_called_once()
+        legacy_call.assert_not_called()
+        self.assertEqual(len(selected), 1)
+        self.assertTrue(updated[0]["kept"])
+        self.assertEqual(
+            verification["verifier_input_mode"],
+            "clean_dino_crops_identity_only",
+        )
+        self.assertTrue(
+            verification["candidate_clean_crops"].endswith(
+                "dino_qwen_clean_dino_crops.png"
+            )
+        )
+
+
 class CandidateGenerationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.saved_state = dict(mask_service.STATE)

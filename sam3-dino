@@ -2,7 +2,15 @@
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME_PROJECT="${SAM3_RUNTIME_PROJECT:-${PROJECT_ROOT}}"
+if [[ -n "${SAM3_RUNTIME_PROJECT:-}" ]]; then
+    RUNTIME_PROJECT="${SAM3_RUNTIME_PROJECT}"
+elif [[ -x "${PROJECT_ROOT}/.venv/bin/python" ]]; then
+    RUNTIME_PROJECT="${PROJECT_ROOT}"
+elif [[ -x "$(dirname -- "${PROJECT_ROOT}")/SAM_3_implementation/.venv/bin/python" ]]; then
+    RUNTIME_PROJECT="$(dirname -- "${PROJECT_ROOT}")/SAM_3_implementation"
+else
+    RUNTIME_PROJECT="${PROJECT_ROOT}"
+fi
 RUNTIME_ROOT="$(readlink -f -- "${RUNTIME_PROJECT}")"
 PYTHON_BIN="${RUNTIME_PROJECT}/.venv/bin/python"
 SAM_SOURCE="${RUNTIME_PROJECT}/third_party/sam3"

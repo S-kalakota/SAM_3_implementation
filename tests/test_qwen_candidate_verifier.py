@@ -37,6 +37,33 @@ def verifier_json(
     )
 
 
+def identity_json(
+    *,
+    decision: str = "select",
+    selected: list[int] | None = None,
+    assessments: list[dict] | None = None,
+    confidence: float = 0.9,
+) -> str:
+    if selected is None:
+        selected = [1] if decision == "select" else []
+    if assessments is None:
+        assessments = [
+            {
+                "candidate_id": 1,
+                "most_likely_object": "orange and grey box",
+                "matches_target": decision == "select",
+            }
+        ]
+    return json.dumps(
+        {
+            "decision": decision,
+            "selected_candidate_ids": selected,
+            "candidate_assessments": assessments,
+            "confidence": confidence,
+        }
+    )
+
+
 class ParseVerifierResponseTests(unittest.TestCase):
     def test_accepts_strict_select(self) -> None:
         parsed = verifier.parse_verifier_response(
@@ -82,6 +109,101 @@ class ParseVerifierResponseTests(unittest.TestCase):
             verifier.parse_verifier_response(
                 verifier_json(decision="no_match", selected=[1]),
                 candidate_count=1,
+            )
+
+
+class ParseIdentityVerifierResponseTests(unittest.TestCase):
+    def test_accepts_object_labels_and_consistent_selection(self) -> None:
+        assessments = [
+            {
+                "candidate_id": 1,
+                "most_likely_object": "storage rack",
+                "matches_target": False,
+            },
+            {
+                "candidate_id": 2,
+                "most_likely_object": "orange and grey box",
+                "matches_target": True,
+            },
+        ]
+        parsed = verifier.parse_identity_verifier_response(
+            identity_json(selected=[2], assessments=assessments),
+            candidate_count=2,
+        )
+        self.assertEqual(parsed["selected_candidate_ids"], [2])
+        self.assertEqual(
+            parsed["candidate_assessments"][1]["most_likely_object"],
+            "orange and grey box",
+        )
+
+    def test_accepts_unambiguous_quoted_ids_and_booleans(self) -> None:
+        parsed = verifier.parse_identity_verifier_response(
+            json.dumps(
+                {
+                    "decision": "select",
+                    "selected_candidate_ids": ["2"],
+                    "candidate_assessments": [
+                        {
+                            "candidate_id": "1",
+                            "most_likely_object": "shelf with boxes",
+                            "matches_target": "false",
+                        },
+                        {
+                            "candidate_id": "2",
+                            "most_likely_object": "orange and grey box",
+                            "matches_target": "true",
+                        },
+                    ],
+                    "confidence": 0.95,
+                }
+            ),
+            candidate_count=2,
+        )
+        self.assertEqual(parsed["selected_candidate_ids"], [2])
+        self.assertFalse(parsed["candidate_assessments"][0]["matches_target"])
+        self.assertTrue(parsed["candidate_assessments"][1]["matches_target"])
+
+    def test_rejects_ambiguous_boolean_text(self) -> None:
+        with self.assertRaises(verifier.VerifierResponseError):
+            verifier.parse_identity_verifier_response(
+                json.dumps(
+                    {
+                        "decision": "select",
+                        "selected_candidate_ids": [1],
+                        "candidate_assessments": [
+                            {
+                                "candidate_id": 1,
+                                "most_likely_object": "orange and grey box",
+                                "matches_target": "yes",
+                            }
+                        ],
+                        "confidence": 0.95,
+                    }
+                ),
+                candidate_count=1,
+            )
+
+    def test_rejects_selection_that_disagrees_with_assessments(self) -> None:
+        with self.assertRaises(verifier.VerifierResponseError):
+            verifier.parse_identity_verifier_response(
+                identity_json(
+                    selected=[1],
+                    assessments=[
+                        {
+                            "candidate_id": 1,
+                            "most_likely_object": "storage rack",
+                            "matches_target": False,
+                        }
+                    ],
+                ),
+                candidate_count=1,
+            )
+
+    def test_requires_an_assessment_for_every_candidate(self) -> None:
+        with self.assertRaises(verifier.VerifierResponseError):
+            verifier.parse_identity_verifier_response(
+                identity_json(),
+                candidate_count=2,
             )
 
 
@@ -143,6 +265,74 @@ class RunVisualVerifierTests(unittest.TestCase):
             ),
         )
         self.assertEqual(result["status"], "no_match")
+        self.assertEqual(result["selected_candidate_ids"], [])
+
+
+class RunIdentityVerifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.common = {
+            "request": "pick the orange and grey box",
+            "target_phrase": "orange and grey box",
+            "selector": None,
+            "frame_path": Path("/tmp/raw.png"),
+            "candidate_crop_path": Path("/tmp/clean_dino_crops.png"),
+            "candidate_records": [{"candidate_id": 1, "sam_index": 4}],
+            "min_select_confidence": 0.7,
+        }
+
+    def test_selects_matching_identity_and_records_label(self) -> None:
+        seen_messages = []
+
+        def sender(messages):
+            seen_messages.append(messages)
+            return identity_json()
+
+        result = verifier.run_identity_verifier(
+            **self.common,
+            send_generate_request=sender,
+        )
+        self.assertEqual(result["status"], "selected")
+        self.assertEqual(result["selected_candidate_ids"], [1])
+        self.assertEqual(
+            result["candidate_assessments"][0]["most_likely_object"],
+            "orange and grey box",
+        )
+        image_paths = [
+            item["image"]
+            for item in seen_messages[0][1]["content"]
+            if item["type"] == "image"
+        ]
+        self.assertEqual(
+            image_paths,
+            ["/tmp/raw.png", "/tmp/clean_dino_crops.png"],
+        )
+
+    def test_identity_no_match_fails_closed(self) -> None:
+        response = identity_json(
+            decision="no_match",
+            selected=[],
+            assessments=[
+                {
+                    "candidate_id": 1,
+                    "most_likely_object": "metal storage shelf",
+                    "matches_target": False,
+                }
+            ],
+            confidence=0.92,
+        )
+        result = verifier.run_identity_verifier(
+            **self.common,
+            send_generate_request=lambda _messages: response,
+        )
+        self.assertEqual(result["status"], "no_match")
+        self.assertEqual(result["selected_candidate_ids"], [])
+
+    def test_identity_low_confidence_fails_closed(self) -> None:
+        result = verifier.run_identity_verifier(
+            **self.common,
+            send_generate_request=lambda _messages: identity_json(confidence=0.69),
+        )
+        self.assertEqual(result["status"], "low_confidence")
         self.assertEqual(result["selected_candidate_ids"], [])
 
 
@@ -317,6 +507,40 @@ class RenderCandidatesTests(unittest.TestCase):
             )
             self.assertTrue(output.is_file())
             self.assertEqual(result["num_candidates_drawn"], 1)
+
+    def test_writes_clean_crops_from_dino_boxes(self) -> None:
+        rgb = np.zeros((80, 100, 3), dtype=np.uint8)
+        rgb[20:50, 30:70] = np.asarray([220, 110, 40], dtype=np.uint8)
+        records = [
+            {
+                "candidate_id": 1,
+                "dino_box_xyxy_crop_pixels": [30.0, 20.0, 70.0, 50.0],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "clean_dino_crops.png"
+            result = verifier.render_clean_dino_candidate_crops(
+                rgb,
+                records,
+                output,
+            )
+            self.assertTrue(output.is_file())
+            self.assertEqual(result["num_candidates_drawn"], 1)
+            self.assertEqual(result["input_mode"], "clean_dino_box_crops")
+            self.assertEqual(
+                result["candidates"][0]["dino_box_xyxy_crop_pixels"],
+                [30.0, 20.0, 70.0, 50.0],
+            )
+
+    def test_clean_crop_requires_dino_box(self) -> None:
+        rgb = np.zeros((40, 50, 3), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "missing its original DINO box"):
+                verifier.render_clean_dino_candidate_crops(
+                    rgb,
+                    [{"candidate_id": 1}],
+                    Path(directory) / "clean_dino_crops.png",
+                )
 
 
 if __name__ == "__main__":
