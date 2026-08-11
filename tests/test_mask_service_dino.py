@@ -36,6 +36,7 @@ def make_args(**updates):
         "min_area": 20,
         "selection_min_valid_depth_fraction": 0.8,
         "selection_roi": None,
+        "depth_refinement": True,
         "qwen_model": "Qwen/Qwen2.5-VL-7B-Instruct",
         "qwen_device_map": "auto",
         "allow_qwen_downloads": False,
@@ -344,6 +345,121 @@ class SamBoxPromptTests(unittest.TestCase):
             self.assertEqual(call["text_str"], "visual")
             self.assertEqual(call["box_labels"], [1])
             self.assertEqual(len(call["boxes_xywh"]), 1)
+
+    def test_prefers_geometry_and_saves_raw_and_refined_masks(self) -> None:
+        class FakeModel:
+            def init_state(self, **_kwargs):
+                return {"state": True}
+
+            def add_prompt(self, **_kwargs):
+                tiny = np.zeros((100, 120), dtype=bool)
+                tiny[47:53, 57:63] = True
+                aligned = np.zeros((100, 120), dtype=bool)
+                aligned[35:65, 45:95] = True
+                aligned[5:10, 5:10] = True
+                return 0, {
+                    "out_binary_masks": np.stack([tiny, aligned]),
+                    "out_probs": np.asarray([0.99, 0.75], dtype=np.float32),
+                }
+
+        class FakeRender:
+            def save(self, output_path):
+                Image.new("RGB", (120, 100)).save(output_path)
+
+        service = task6.MultiplexSam3AgentService.__new__(
+            task6.MultiplexSam3AgentService
+        )
+        service.model = FakeModel()
+        service.threshold = 0.05
+        proposal = {
+            "proposal_id": 1,
+            "dino_index": 0,
+            "phrase": "box",
+            "text_label": "box",
+            "dino_score": 0.9,
+            "original_box_xyxy_crop_pixels": [45, 35, 95, 65],
+            "padded_box_xyxy_crop_pixels": [40, 30, 100, 70],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            frame = Path(directory) / "frame.png"
+            output_dir = Path(directory) / "sam"
+            Image.new("RGB", (120, 100)).save(frame)
+            with (
+                mock.patch.object(task6.torch.cuda, "is_available", return_value=False),
+                mock.patch.object(
+                    task6.torch,
+                    "autocast",
+                    return_value=contextlib.nullcontext(),
+                ),
+                mock.patch.object(
+                    task6,
+                    "rle_encode",
+                    return_value=[{"counts": "refined-rle"}],
+                ),
+                mock.patch.object(task6, "visualize", return_value=FakeRender()),
+            ):
+                output_path = service.segment_boxes(
+                    image_path=str(frame),
+                    proposals=[proposal],
+                    output_folder_path=str(output_dir),
+                )
+            output = json.loads(Path(output_path).read_text(encoding="utf-8"))
+            provenance = output["proposal_provenance"][0]
+            raw_mask = np.asarray(Image.open(provenance["raw_mask_artifact"])) > 0
+            refined_mask = np.asarray(Image.open(provenance["mask_artifact"])) > 0
+
+        self.assertEqual(provenance["sam_raw_index"], 1)
+        self.assertAlmostEqual(provenance["sam_score"], 0.75)
+        self.assertEqual(provenance["raw_mask_area_pixels"], 1525)
+        self.assertEqual(provenance["mask_area_pixels"], 1500)
+        self.assertTrue(raw_mask[7, 7])
+        self.assertFalse(refined_mask[7, 7])
+        self.assertTrue(refined_mask[50, 60])
+        self.assertGreater(provenance["mask_geometry_score"], 0.9)
+
+
+class DepthRefinementIntegrationTests(unittest.TestCase):
+    def test_verified_dino_mask_is_cut_and_artifacts_are_auditable(self) -> None:
+        mask = np.zeros((80, 120), dtype=bool)
+        mask[20:60, 20:100] = True
+        depth = np.full(mask.shape, 1.0, dtype=np.float32)
+        depth[20:60, 70:100] = 1.5
+        candidate_record = candidate(0, mask)
+        candidate_record["proposal_provenance"] = {
+            "candidate_index": 0,
+            "dino_original_box_xyxy_crop_pixels": [20, 20, 100, 60],
+            "sam_prompt_box_xyxy_crop_pixels": [20, 20, 100, 60],
+            "mask_artifact": "/tmp/pre_depth_mask.png",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            refined, updated, manifest = (
+                mask_service.refine_verified_dino_masks_with_depth(
+                    kept=[(mask, 0.9)],
+                    candidates=[candidate_record],
+                    rgb_np=np.zeros((80, 120, 3), dtype=np.uint8),
+                    depth_np=depth,
+                    req_dir=Path(directory),
+                    args=make_args(min_area=20),
+                    enabled=True,
+                )
+            )
+            final_mask = refined[0][0]
+            provenance = updated[0]["proposal_provenance"]
+            self.assertTrue(Path(manifest["artifact"]).is_file())
+            self.assertTrue(Path(manifest["depth_artifact"]).is_file())
+            self.assertTrue(Path(provenance["mask_artifact"]).is_file())
+            self.assertTrue(
+                Path(provenance["depth_refinement_overlay_artifact"]).is_file()
+            )
+
+        self.assertEqual(manifest["applied_count"], 1)
+        self.assertTrue(final_mask[30, 40])
+        self.assertFalse(final_mask[30, 80])
+        self.assertEqual(updated[0]["area_pixels"], int(final_mask.sum()))
+        self.assertEqual(provenance["geometry_mask_artifact"], "/tmp/pre_depth_mask.png")
+        self.assertEqual(provenance["depth_refinement"]["status"], "applied")
 
 
 class DirectPipelineTests(unittest.TestCase):

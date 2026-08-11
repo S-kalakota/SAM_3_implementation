@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
 try:
     from fastapi import FastAPI, HTTPException
@@ -172,6 +173,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "When selecting among multiple masks, prefer candidates whose ZED "
             "depth coverage is at least this fraction. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--depth-refinement",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Trim verified DINO/SAM masks at ZED depth discontinuities. "
+            "Use --no-depth-refinement for an A/B comparison."
         ),
     )
     parser.add_argument(
@@ -955,6 +965,254 @@ def cap_verifier_candidates(
     return kept[:maximum], updated
 
 
+def _render_depth_refinement(
+    rgb_np: np.ndarray,
+    original_mask: np.ndarray,
+    refined_mask: np.ndarray,
+    output_path: Path,
+) -> str:
+    """Save a diagnostic: retained pixels green and removed pixels red."""
+
+    if rgb_np.shape[:2] != original_mask.shape:
+        raise ValueError("RGB and mask shapes do not match")
+    rendered = np.asarray(rgb_np, dtype=np.float32).copy()
+    retained = np.asarray(refined_mask, dtype=bool)
+    removed = np.asarray(original_mask, dtype=bool) & ~retained
+    rendered[retained] = 0.55 * rendered[retained] + 0.45 * np.asarray(
+        [0.0, 255.0, 0.0]
+    )
+    rendered[removed] = 0.35 * rendered[removed] + 0.65 * np.asarray(
+        [255.0, 0.0, 0.0]
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.clip(rendered, 0, 255).astype(np.uint8)).save(output_path)
+    return str(output_path)
+
+
+def refine_verified_dino_masks_with_depth(
+    *,
+    kept: list[tuple[np.ndarray, float]],
+    candidates: list[dict[str, Any]],
+    rgb_np: np.ndarray,
+    depth_np: np.ndarray,
+    req_dir: Path,
+    args: argparse.Namespace,
+    enabled: bool,
+) -> tuple[
+    list[tuple[np.ndarray, float]],
+    list[dict[str, Any]],
+    dict[str, Any],
+]:
+    """Apply conservative ZED-depth cuts to Qwen-approved DINO masks."""
+
+    manifest_path = req_dir / "dino_depth_refinement.json"
+    manifest: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "algorithm": "dino_center_depth_connectivity_v1",
+        "status": "disabled" if not enabled else "not_run",
+        "adds_pixels": False,
+        "candidate_count": len(kept),
+        "applied_count": 0,
+        "candidates": [],
+        "depth_units": "meters",
+        "depth_artifact": None,
+        "artifact": str(manifest_path),
+    }
+    if not enabled:
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return kept, candidates, manifest
+
+    depth_artifact = req_dir / "depth_crop_m.npy"
+    np.save(
+        depth_artifact,
+        np.asarray(depth_np, dtype=np.float32),
+        allow_pickle=False,
+    )
+    manifest["depth_artifact"] = str(depth_artifact)
+    manifest["depth_shape_hw"] = [int(value) for value in depth_np.shape]
+
+    kept_candidates = [candidate for candidate in candidates if candidate["kept"]]
+    if len(kept_candidates) != len(kept):
+        raise ValueError("kept masks and candidate metadata are inconsistent")
+    if not kept:
+        manifest["status"] = "no_verified_candidates"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return kept, candidates, manifest
+
+    updated_kept: list[tuple[np.ndarray, float]] = []
+    updated_candidates_by_index: dict[int, dict[str, Any]] = {}
+    for (original_mask, score), candidate_value in zip(kept, kept_candidates):
+        candidate = dict(candidate_value)
+        sam_index = int(candidate["index"])
+        original_mask = np.asarray(original_mask, dtype=bool)
+        provenance_value = candidate.get("proposal_provenance")
+        provenance = (
+            dict(provenance_value)
+            if isinstance(provenance_value, dict)
+            else {}
+        )
+        provenance.setdefault("candidate_index", sam_index)
+        original_box = provenance.get("dino_original_box_xyxy_crop_pixels")
+        support_box = provenance.get("sam_prompt_box_xyxy_crop_pixels")
+        before_stats = mask_depth.mask_depth_stats(original_mask, depth_np)
+        final_mask = original_mask.copy()
+
+        if not isinstance(original_box, (list, tuple)) or len(original_box) != 4:
+            depth_report: dict[str, Any] = {
+                "algorithm": "dino_center_depth_connectivity_v1",
+                "status": "skipped_missing_dino_box",
+                "reason": "candidate provenance has no original DINO box",
+                "applied": False,
+                "adds_pixels": False,
+                "original_area_pixels": int(original_mask.sum()),
+                "refined_area_pixels": int(original_mask.sum()),
+                "removed_pixels": 0,
+                "before_depth_stats_m": before_stats,
+                "after_depth_stats_m": before_stats,
+            }
+        else:
+            try:
+                depth_mask, depth_report = (
+                    mask_depth.refine_mask_at_depth_discontinuities(
+                        original_mask,
+                        depth_np,
+                        anchor_box_xyxy=original_box,
+                    )
+                )
+                if depth_report["applied"]:
+                    geometry_box = (
+                        support_box
+                        if isinstance(support_box, (list, tuple))
+                        and len(support_box) == 4
+                        else original_box
+                    )
+                    geometry_mask, geometry_report = (
+                        grounding_dino.refine_mask_with_dino_box(
+                            depth_mask,
+                            original_box_xyxy=original_box,
+                            support_box_xyxy=geometry_box,
+                        )
+                    )
+                    proposed_final_area = int(geometry_mask.sum())
+                    retained_fraction = float(
+                        proposed_final_area / max(int(original_mask.sum()), 1)
+                    )
+                    depth_report["post_depth_geometry_refinement"] = geometry_report
+                    depth_report["proposed_final_area_pixels"] = proposed_final_area
+                    depth_report["proposed_final_retained_fraction"] = retained_fraction
+                    if (
+                        proposed_final_area <= int(args.min_area)
+                        or retained_fraction
+                        < mask_depth.DEFAULT_REFINEMENT_MIN_RETAINED_FRACTION
+                    ):
+                        depth_report.update(
+                            depth_cut_status="applied",
+                            status="skipped_post_refinement_guardrail",
+                            reason=(
+                                "depth plus component cleanup would leave an "
+                                "unsafe-small mask"
+                            ),
+                            applied=False,
+                            refined_area_pixels=int(original_mask.sum()),
+                            removed_pixels=0,
+                            after_depth_stats_m=before_stats,
+                        )
+                    else:
+                        final_mask = geometry_mask
+                        depth_report.update(
+                            refined_area_pixels=proposed_final_area,
+                            removed_pixels=int(original_mask.sum())
+                            - proposed_final_area,
+                            after_depth_stats_m=mask_depth.mask_depth_stats(
+                                final_mask,
+                                depth_np,
+                            ),
+                        )
+            except Exception as exc:
+                depth_report = {
+                    "algorithm": "dino_center_depth_connectivity_v1",
+                    "status": "skipped_error",
+                    "reason": f"depth refinement failed safely: {exc!r}",
+                    "applied": False,
+                    "adds_pixels": False,
+                    "original_area_pixels": int(original_mask.sum()),
+                    "refined_area_pixels": int(original_mask.sum()),
+                    "removed_pixels": 0,
+                    "before_depth_stats_m": before_stats,
+                    "after_depth_stats_m": before_stats,
+                }
+
+        mask_artifact = req_dir / f"depth_refined_mask_{sam_index + 1:03d}.png"
+        Image.fromarray(final_mask.astype(np.uint8) * 255).save(mask_artifact)
+        diagnostic_artifact = req_dir / (
+            f"depth_refinement_{sam_index + 1:03d}.png"
+        )
+        _render_depth_refinement(
+            rgb_np,
+            original_mask,
+            final_mask,
+            diagnostic_artifact,
+        )
+
+        final_area = int(final_mask.sum())
+        geometry_mask_artifact = provenance.get("mask_artifact")
+        provenance.update(
+            {
+                "pre_depth_mask_area_pixels": int(original_mask.sum()),
+                "geometry_mask_artifact": geometry_mask_artifact,
+                "mask_area_pixels": final_area,
+                "mask_artifact": str(mask_artifact),
+                "depth_refined_mask_artifact": str(mask_artifact),
+                "depth_refinement_overlay_artifact": str(diagnostic_artifact),
+                "depth_refinement": depth_report,
+                "mask_center_xy_crop_pixels": [
+                    float(value) for value in mask_center_xy(final_mask)
+                ],
+                "mask_box_xywh_normalized": (
+                    grounding_dino.mask_bbox_xywh_normalized(final_mask)
+                ),
+            }
+        )
+        candidate.update(
+            {
+                "area_pixels": final_area,
+                "proposal_provenance": provenance,
+                "depth_refinement": depth_report,
+            }
+        )
+        updated_candidates_by_index[sam_index] = candidate
+        updated_kept.append((final_mask, float(score)))
+        if depth_report.get("applied"):
+            manifest["applied_count"] += 1
+        manifest["candidates"].append(
+            {
+                "sam_index": sam_index,
+                "score": float(score),
+                "mask_artifact": str(mask_artifact),
+                "diagnostic_artifact": str(diagnostic_artifact),
+                "report": depth_report,
+            }
+        )
+
+    updated_candidates = [
+        updated_candidates_by_index.get(int(candidate["index"]), dict(candidate))
+        for candidate in candidates
+    ]
+    manifest["status"] = "completed"
+    manifest["skipped_count"] = len(kept) - int(manifest["applied_count"])
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return updated_kept, updated_candidates, manifest
+
+
 def legacy_candidate_generation(
     *,
     sam_prompt: str,
@@ -1039,6 +1297,42 @@ def dino_candidate_generation(
             "cross_phrase_nms_iou": float(args.dino_nms_iou),
             "box_padding_fraction": float(args.dino_box_padding),
             "max_proposals": int(args.dino_max_proposals),
+            "mask_min_component_pixels": int(
+                grounding_dino.DEFAULT_MASK_MIN_COMPONENT_PIXELS
+            ),
+            "mask_min_component_fraction": float(
+                grounding_dino.DEFAULT_MASK_MIN_COMPONENT_FRACTION
+            ),
+            "mask_min_original_overlap": float(
+                grounding_dino.DEFAULT_MASK_MIN_ORIGINAL_OVERLAP
+            ),
+            "mask_geometry_weight": float(
+                grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+            ),
+            "mask_sam_score_weight": float(
+                1.0 - grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+            ),
+            "depth_refinement_enabled": bool(
+                getattr(args, "depth_refinement", True)
+            ),
+            "depth_min_valid_pixels": int(
+                mask_depth.DEFAULT_REFINEMENT_MIN_VALID_PIXELS
+            ),
+            "depth_min_valid_fraction": float(
+                mask_depth.DEFAULT_REFINEMENT_MIN_VALID_FRACTION
+            ),
+            "depth_min_jump_m": float(
+                mask_depth.DEFAULT_REFINEMENT_MIN_JUMP_M
+            ),
+            "depth_relative_jump": float(
+                mask_depth.DEFAULT_REFINEMENT_RELATIVE_JUMP
+            ),
+            "depth_max_local_jump_m": float(
+                mask_depth.DEFAULT_REFINEMENT_MAX_LOCAL_JUMP_M
+            ),
+            "depth_max_global_drift_m": float(
+                mask_depth.DEFAULT_REFINEMENT_MAX_GLOBAL_DRIFT_M
+            ),
         },
         "timing_s": {
             "adapter_total": float(raw_result.get("total_s", dino_elapsed_s)),
@@ -1119,6 +1413,7 @@ def direct_segment(
         "sam_box_prompts_s": 0.0,
         "sam_box_prompt_timings": [],
         "legacy_sam_s": 0.0,
+        "depth_refinement_s": 0.0,
     }
     dino_generation = None
     legacy_fallback_reason = None
@@ -1168,6 +1463,27 @@ def direct_segment(
 
     kept = generation["kept"]
     candidates = generation["candidates"]
+    if source_used == "dino_sam_boxes" and generation.get("outputs"):
+        provenance_by_index = {
+            int(item.get("candidate_index", index)): dict(item)
+            for index, item in enumerate(
+                generation["outputs"].get("proposal_provenance", [])
+            )
+        }
+        candidates = [
+            {
+                **candidate,
+                "proposal_provenance": {
+                    **provenance_by_index.get(int(candidate["index"]), {}),
+                    **(
+                        candidate.get("proposal_provenance", {})
+                        if isinstance(candidate.get("proposal_provenance"), dict)
+                        else {}
+                    ),
+                },
+            }
+            for candidate in candidates
+        ]
     kept, candidates = cap_verifier_candidates(kept, candidates)
     fallback_eligible = len(kept) == 0
     artifact_stem = "dino" if source_used == "dino_sam_boxes" else "legacy"
@@ -1185,6 +1501,32 @@ def direct_segment(
     )
     stage_timings["qwen_s"] = float(verification.get("inference_s", 0.0))
     stage_timings["qwen_stage_s"] = float(verification.get("elapsed_s", 0.0))
+    depth_refinement: dict[str, Any] = {
+        "enabled": False,
+        "algorithm": "dino_center_depth_connectivity_v1",
+        "status": "not_applicable_without_dino_boxes",
+        "adds_pixels": False,
+        "candidate_count": len(kept),
+        "applied_count": 0,
+        "candidates": [],
+        "artifact": None,
+    }
+    if source_used == "dino_sam_boxes":
+        depth_refinement_started = time.monotonic()
+        kept, candidates, depth_refinement = (
+            refine_verified_dino_masks_with_depth(
+                kept=kept,
+                candidates=candidates,
+                rgb_np=rgb_np,
+                depth_np=depth_np,
+                req_dir=req_dir,
+                args=args,
+                enabled=bool(getattr(args, "depth_refinement", True)),
+            )
+        )
+        stage_timings["depth_refinement_s"] = float(
+            time.monotonic() - depth_refinement_started
+        )
     selection_started = time.monotonic()
     kept, candidates, selection = select_spatial_mask(
         kept,
@@ -1205,9 +1547,20 @@ def direct_segment(
     )
     proposal_provenance = []
     if source_used == "dino_sam_boxes" and generation.get("outputs"):
-        proposal_provenance = list(
-            generation["outputs"].get("proposal_provenance", [])
-        )
+        candidate_provenance = {
+            int(candidate["index"]): dict(candidate["proposal_provenance"])
+            for candidate in candidates
+            if isinstance(candidate.get("proposal_provenance"), dict)
+        }
+        proposal_provenance = [
+            candidate_provenance.get(
+                int(item.get("candidate_index", index)),
+                dict(item),
+            )
+            for index, item in enumerate(
+                generation["outputs"].get("proposal_provenance", [])
+            )
+        ]
     candidate_generation = {
         "configured_pipeline_mode": args.pipeline_mode,
         "source_used": source_used,
@@ -1224,6 +1577,7 @@ def direct_segment(
         "proposals": []
         if dino_generation is None
         else dino_generation["proposals"],
+        "depth_refinement_json": depth_refinement.get("artifact"),
     }
     path_prefix = {
         "dino_sam_boxes": "dino_sam",
@@ -1250,6 +1604,7 @@ def direct_segment(
         "intent": intent,
         "verification": verification,
         "candidate_generation": candidate_generation,
+        "depth_refinement": depth_refinement,
         "proposal_provenance": proposal_provenance,
         "stage_timings": stage_timings,
         "fallback_eligible": fallback_eligible,
@@ -1358,6 +1713,16 @@ def agent_fallback_segment(
             "phrases": [target_phrase],
             "proposals": [],
         },
+        "depth_refinement": {
+            "enabled": False,
+            "algorithm": "dino_center_depth_connectivity_v1",
+            "status": "not_applicable_agent_fallback",
+            "adds_pixels": False,
+            "candidate_count": len(kept),
+            "applied_count": 0,
+            "candidates": [],
+            "artifact": None,
+        },
         "proposal_provenance": [],
         "stage_timings": {
             "agent_s": float(agent_elapsed_s),
@@ -1435,6 +1800,12 @@ def build_selected_mask_record(
         "center_xy_crop_pixels": center,
         "center_xy_full_pixels": full_center,
         "crop_to_full_offset_xy_pixels": [offset_x, offset_y],
+        "mask_artifact": None
+        if provenance is None
+        else provenance.get("mask_artifact"),
+        "depth_refinement": None
+        if provenance is None
+        else provenance.get("depth_refinement"),
         "proposal_provenance": provenance,
     }
 
@@ -1543,6 +1914,7 @@ def segment_once(request: str, *, use_agent_fallback: bool = False) -> dict[str,
         "intent": result.get("intent"),
         "verification": result.get("verification"),
         "candidate_generation": result.get("candidate_generation"),
+        "depth_refinement": result.get("depth_refinement"),
         "proposal_provenance": proposal_provenance,
         "selected_mask": selected_mask,
         "stage_timings": stage_timings,
@@ -1594,6 +1966,51 @@ if app is not None:
                 "nms_iou": float(args.dino_nms_iou),
                 "max_proposals": int(args.dino_max_proposals),
                 "box_padding_fraction": float(args.dino_box_padding),
+                "mask_refinement": {
+                    "min_component_pixels": int(
+                        grounding_dino.DEFAULT_MASK_MIN_COMPONENT_PIXELS
+                    ),
+                    "min_component_fraction": float(
+                        grounding_dino.DEFAULT_MASK_MIN_COMPONENT_FRACTION
+                    ),
+                    "min_original_overlap": float(
+                        grounding_dino.DEFAULT_MASK_MIN_ORIGINAL_OVERLAP
+                    ),
+                    "geometry_weight": float(
+                        grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+                    ),
+                    "sam_score_weight": float(
+                        1.0 - grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+                    ),
+                    "adds_pixels": False,
+                },
+                "depth_refinement": {
+                    "enabled": bool(args.depth_refinement),
+                    "algorithm": "dino_center_depth_connectivity_v1",
+                    "anchor": "original_dino_box_center_patch",
+                    "min_valid_pixels": int(
+                        mask_depth.DEFAULT_REFINEMENT_MIN_VALID_PIXELS
+                    ),
+                    "min_valid_fraction": float(
+                        mask_depth.DEFAULT_REFINEMENT_MIN_VALID_FRACTION
+                    ),
+                    "min_jump_m": float(
+                        mask_depth.DEFAULT_REFINEMENT_MIN_JUMP_M
+                    ),
+                    "relative_jump": float(
+                        mask_depth.DEFAULT_REFINEMENT_RELATIVE_JUMP
+                    ),
+                    "max_local_jump_m": float(
+                        mask_depth.DEFAULT_REFINEMENT_MAX_LOCAL_JUMP_M
+                    ),
+                    "max_global_drift_m": float(
+                        mask_depth.DEFAULT_REFINEMENT_MAX_GLOBAL_DRIFT_M
+                    ),
+                    "min_retained_fraction": float(
+                        mask_depth.DEFAULT_REFINEMENT_MIN_RETAINED_FRACTION
+                    ),
+                    "adds_pixels": False,
+                },
                 "calibrated_crop_xywh": [
                     int(value) for value in task5.DEFAULT_CROP
                 ],

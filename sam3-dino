@@ -20,6 +20,7 @@ HOST="${SAM3_DINO_HOST:-127.0.0.1}"
 PORT="${SAM3_DINO_PORT:-8765}"
 HEALTH_URL="http://${HOST}:${PORT}/health"
 START_TIMEOUT="${SAM3_DINO_START_TIMEOUT:-600}"
+DEPTH_REFINEMENT="${SAM3_DINO_DEPTH_REFINEMENT:-1}"
 RUNTIME_DIR="${PROJECT_ROOT}/outputs/runtime"
 PID_FILE="${RUNTIME_DIR}/dino-mask-service.pid"
 LOG_FILE="${RUNTIME_DIR}/dino-mask-service.log"
@@ -47,6 +48,7 @@ Environment overrides:
   SAM3_DINO_HOST                       Service host (default 127.0.0.1)
   SAM3_DINO_PORT                       Service port (default 8765)
   SAM3_DINO_START_TIMEOUT              Startup timeout in seconds (default 600)
+  SAM3_DINO_DEPTH_REFINEMENT           1 enables depth cuts; 0 disables (default 1)
 EOF
 }
 
@@ -62,6 +64,8 @@ require_command() {
 check_timeout() {
     [[ "${START_TIMEOUT}" =~ ^[1-9][0-9]*$ ]] \
         || die "SAM3_DINO_START_TIMEOUT must be a positive integer"
+    [[ "${DEPTH_REFINEMENT}" =~ ^[01]$ ]] \
+        || die "SAM3_DINO_DEPTH_REFINEMENT must be 0 or 1"
 }
 
 check_runtime() {
@@ -195,8 +199,12 @@ wait_until_ready() {
 
 start_service() {
     local pid
+    local depth_refinement_args=()
     check_runtime
     check_model_caches
+    if [[ "${DEPTH_REFINEMENT}" == "0" ]]; then
+        depth_refinement_args+=(--no-depth-refinement)
+    fi
     if health_is_dino; then
         echo "Grounding DINO segmentation is already ready."
         return 0
@@ -226,6 +234,7 @@ start_service() {
             --warm-qwen \
             --crop 448,360,384,360 \
             --checkpoint "${SAM_CHECKPOINT}" \
+            "${depth_refinement_args[@]}" \
         >> "${LOG_FILE}" 2>&1 &
     pid="$!"
     printf '%s\n' "${pid}" > "${PID_FILE}"
