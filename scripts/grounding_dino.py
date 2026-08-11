@@ -13,6 +13,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -27,6 +28,11 @@ DEFAULT_TEXT_THRESHOLD = 0.20
 DEFAULT_NMS_IOU = 0.50
 DEFAULT_MAX_PROPOSALS = 3
 DEFAULT_BOX_PADDING = 0.05
+DEFAULT_MASK_MIN_COMPONENT_PIXELS = 8
+DEFAULT_MASK_MIN_COMPONENT_FRACTION = 0.01
+DEFAULT_MASK_MIN_ORIGINAL_OVERLAP = 0.50
+DEFAULT_MASK_GEOMETRY_WEIGHT = 0.75
+MAX_REPORTED_MASK_COMPONENTS = 64
 MAX_PHRASES = 5
 
 
@@ -269,6 +275,277 @@ def box_contains_point(box_xyxy: Sequence[float], point_xy: Sequence[float]) -> 
     x1, y1, x2, y2 = [float(value) for value in box_xyxy]
     x, y = [float(value) for value in point_xy]
     return x1 <= x < x2 and y1 <= y < y2
+
+
+def _box_pixel_bounds(
+    box_xyxy: Sequence[float],
+    *,
+    image_width: int,
+    image_height: int,
+) -> tuple[int, int, int, int]:
+    """Clamp one floating-point xyxy box to conservative pixel bounds."""
+
+    if len(box_xyxy) != 4:
+        raise ValueError("box_xyxy must contain four values")
+    x0, y0, x1, y1 = [float(value) for value in box_xyxy]
+    if not all(math.isfinite(value) for value in (x0, y0, x1, y1)):
+        raise ValueError("box coordinates must be finite")
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError("box must have positive width and height")
+    pixel_x0 = max(0, min(image_width, int(math.floor(x0))))
+    pixel_y0 = max(0, min(image_height, int(math.floor(y0))))
+    pixel_x1 = max(0, min(image_width, int(math.ceil(x1))))
+    pixel_y1 = max(0, min(image_height, int(math.ceil(y1))))
+    if pixel_x1 <= pixel_x0 or pixel_y1 <= pixel_y0:
+        raise ValueError("box does not overlap the image")
+    return pixel_x0, pixel_y0, pixel_x1, pixel_y1
+
+
+def mask_box_geometry(
+    mask: np.ndarray,
+    original_box_xyxy: Sequence[float],
+) -> dict[str, Any]:
+    """Measure how coherently a mask aligns with its original DINO box."""
+
+    mask_np = np.asarray(mask, dtype=bool)
+    if mask_np.ndim != 2:
+        raise ValueError("mask must be an HxW array")
+    image_height, image_width = mask_np.shape
+    box_x0, box_y0, box_x1, box_y1 = _box_pixel_bounds(
+        original_box_xyxy,
+        image_width=image_width,
+        image_height=image_height,
+    )
+    area = int(mask_np.sum())
+    if area == 0:
+        return {
+            "area_pixels": 0,
+            "bbox_xyxy_pixels": None,
+            "bbox_iou_with_dino": 0.0,
+            "inside_dino_pixels": 0,
+            "inside_dino_fraction": 0.0,
+            "dino_box_coverage": 0.0,
+            "center_xy_pixels": None,
+            "center_alignment": 0.0,
+            "component_count": 0,
+            "largest_component_fraction": 0.0,
+            "geometry_score": 0.0,
+        }
+
+    ys, xs = np.where(mask_np)
+    mask_box = [
+        float(xs.min()),
+        float(ys.min()),
+        float(xs.max() + 1),
+        float(ys.max() + 1),
+    ]
+    inside_pixels = int(
+        mask_np[box_y0:box_y1, box_x0:box_x1].sum()
+    )
+    box_area = int((box_x1 - box_x0) * (box_y1 - box_y0))
+    center_x = float(xs.mean())
+    center_y = float(ys.mean())
+    dino_x0, dino_y0, dino_x1, dino_y1 = [
+        float(value) for value in original_box_xyxy
+    ]
+    dino_center_x = (dino_x0 + dino_x1) / 2.0
+    dino_center_y = (dino_y0 + dino_y1) / 2.0
+    dino_diagonal = max(
+        math.hypot(dino_x1 - dino_x0, dino_y1 - dino_y0),
+        1.0,
+    )
+    center_distance = math.hypot(
+        center_x - dino_center_x,
+        center_y - dino_center_y,
+    )
+    center_alignment = max(
+        0.0,
+        1.0 - min(center_distance / (0.5 * dino_diagonal), 1.0),
+    )
+    component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask_np.astype(np.uint8),
+        connectivity=8,
+    )
+    component_areas = stats[1:, cv2.CC_STAT_AREA]
+    largest_component_fraction = (
+        0.0
+        if component_areas.size == 0
+        else float(component_areas.max() / area)
+    )
+    bbox_iou = box_iou_xyxy(mask_box, original_box_xyxy)
+    inside_fraction = float(inside_pixels / area)
+    box_coverage = float(inside_pixels / box_area)
+    coverage_score = min(box_coverage / 0.50, 1.0)
+    geometry_score = (
+        0.30 * bbox_iou
+        + 0.25 * inside_fraction
+        + 0.20 * coverage_score
+        + 0.15 * center_alignment
+        + 0.10 * largest_component_fraction
+    )
+    return {
+        "area_pixels": area,
+        "bbox_xyxy_pixels": [int(value) for value in mask_box],
+        "bbox_iou_with_dino": float(bbox_iou),
+        "inside_dino_pixels": inside_pixels,
+        "inside_dino_fraction": inside_fraction,
+        "dino_box_coverage": box_coverage,
+        "center_xy_pixels": [center_x, center_y],
+        "center_alignment": float(center_alignment),
+        "component_count": int(component_count - 1),
+        "largest_component_fraction": largest_component_fraction,
+        "geometry_score": float(geometry_score),
+    }
+
+
+def refine_mask_with_dino_box(
+    mask: np.ndarray,
+    *,
+    original_box_xyxy: Sequence[float],
+    support_box_xyxy: Sequence[float],
+    min_component_pixels: int = DEFAULT_MASK_MIN_COMPONENT_PIXELS,
+    min_component_fraction: float = DEFAULT_MASK_MIN_COMPONENT_FRACTION,
+    min_original_overlap: float = DEFAULT_MASK_MIN_ORIGINAL_OVERLAP,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Remove unsupported mask pixels and geometrically unrelated components.
+
+    The padded DINO box is a hard support region. The primary component is the
+    component with the most pixels in the original DINO box. Secondary
+    components survive only when they are large enough and predominantly
+    overlap that original box. No holes are filled and no new pixels are added.
+    """
+
+    mask_np = np.asarray(mask, dtype=bool)
+    if mask_np.ndim != 2:
+        raise ValueError("mask must be an HxW array")
+    if (
+        isinstance(min_component_pixels, bool)
+        or not isinstance(min_component_pixels, int)
+        or min_component_pixels < 1
+    ):
+        raise ValueError("min_component_pixels must be a positive integer")
+    if not 0.0 <= min_component_fraction <= 1.0:
+        raise ValueError("min_component_fraction must be in [0, 1]")
+    if not 0.0 <= min_original_overlap <= 1.0:
+        raise ValueError("min_original_overlap must be in [0, 1]")
+
+    image_height, image_width = mask_np.shape
+    support_x0, support_y0, support_x1, support_y1 = _box_pixel_bounds(
+        support_box_xyxy,
+        image_width=image_width,
+        image_height=image_height,
+    )
+    original_x0, original_y0, original_x1, original_y1 = _box_pixel_bounds(
+        original_box_xyxy,
+        image_width=image_width,
+        image_height=image_height,
+    )
+    supported = np.zeros_like(mask_np)
+    supported[support_y0:support_y1, support_x0:support_x1] = mask_np[
+        support_y0:support_y1,
+        support_x0:support_x1,
+    ]
+    raw_area = int(mask_np.sum())
+    supported_area = int(supported.sum())
+    raw_geometry = mask_box_geometry(mask_np, original_box_xyxy)
+    if supported_area == 0:
+        empty = np.zeros_like(mask_np)
+        return empty, {
+            "raw_area_pixels": raw_area,
+            "supported_area_pixels": 0,
+            "refined_area_pixels": 0,
+            "removed_outside_support_pixels": raw_area,
+            "removed_component_pixels": 0,
+            "raw_geometry": raw_geometry,
+            "refined_geometry": mask_box_geometry(empty, original_box_xyxy),
+            "component_area_threshold_pixels": int(min_component_pixels),
+            "supported_component_count": 0,
+            "reported_component_count": 0,
+            "components": [],
+        }
+
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        supported.astype(np.uint8),
+        connectivity=8,
+    )
+    components = []
+    for label_id in range(1, count):
+        area = int(stats[label_id, cv2.CC_STAT_AREA])
+        component = labels == label_id
+        original_pixels = int(
+            component[original_y0:original_y1, original_x0:original_x1].sum()
+        )
+        components.append(
+            {
+                "label_id": label_id,
+                "area_pixels": area,
+                "original_box_pixels": original_pixels,
+                "original_box_fraction": float(original_pixels / area),
+                "centroid_xy_pixels": [
+                    float(centroids[label_id][0]),
+                    float(centroids[label_id][1]),
+                ],
+                "bbox_xywh_pixels": [
+                    int(stats[label_id, cv2.CC_STAT_LEFT]),
+                    int(stats[label_id, cv2.CC_STAT_TOP]),
+                    int(stats[label_id, cv2.CC_STAT_WIDTH]),
+                    int(stats[label_id, cv2.CC_STAT_HEIGHT]),
+                ],
+            }
+        )
+    primary = max(
+        components,
+        key=lambda item: (
+            item["original_box_pixels"],
+            item["area_pixels"],
+            -item["label_id"],
+        ),
+    )
+    area_threshold = max(
+        int(min_component_pixels),
+        int(math.ceil(primary["area_pixels"] * min_component_fraction)),
+    )
+    retained_labels = {int(primary["label_id"])}
+    for component in components:
+        if component["label_id"] == primary["label_id"]:
+            component["retained"] = True
+            component["retention_reason"] = "primary_component"
+            continue
+        keep = (
+            component["area_pixels"] >= area_threshold
+            and component["original_box_fraction"] >= min_original_overlap
+        )
+        component["retained"] = bool(keep)
+        component["retention_reason"] = (
+            "supported_secondary_component"
+            if keep
+            else "small_or_geometrically_unrelated"
+        )
+        if keep:
+            retained_labels.add(int(component["label_id"]))
+
+    refined = np.isin(labels, list(retained_labels))
+    refined_area = int(refined.sum())
+    refined_geometry = mask_box_geometry(refined, original_box_xyxy)
+    reported_components = sorted(
+        components,
+        key=lambda item: (-item["area_pixels"], item["label_id"]),
+    )[:MAX_REPORTED_MASK_COMPONENTS]
+    return refined, {
+        "raw_area_pixels": raw_area,
+        "supported_area_pixels": supported_area,
+        "refined_area_pixels": refined_area,
+        "removed_outside_support_pixels": int(raw_area - supported_area),
+        "removed_component_pixels": int(supported_area - refined_area),
+        "raw_geometry": raw_geometry,
+        "refined_geometry": refined_geometry,
+        "component_area_threshold_pixels": area_threshold,
+        "min_original_overlap": float(min_original_overlap),
+        "primary_component_label": int(primary["label_id"]),
+        "supported_component_count": len(components),
+        "reported_component_count": len(reported_components),
+        "components": reported_components,
+    }
 
 
 def crop_point_to_full(

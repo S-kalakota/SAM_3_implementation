@@ -298,15 +298,79 @@ class MultiplexSam3AgentService:
                 scores = task2.to_numpy_array(
                     raw_outputs.get("out_probs", [])
                 ).astype(np.float32, copy=False).reshape(-1)
-                eligible: list[tuple[float, int, np.ndarray, tuple[float, float]]] = []
+                eligible: list[dict[str, Any]] = []
+                raw_candidate_records: list[dict[str, Any]] = []
                 for raw_index, mask in enumerate(masks):
-                    if raw_index >= len(scores) or not mask.any():
+                    candidate_record: dict[str, Any] = {
+                        "raw_index": int(raw_index),
+                        "sam_score": None,
+                        "eligible": False,
+                        "reject_reason": None,
+                    }
+                    if raw_index >= len(scores):
+                        candidate_record["reject_reason"] = "missing_sam_score"
+                        raw_candidate_records.append(candidate_record)
                         continue
-                    center = grounding_dino.mask_center_xy(mask)
-                    if grounding_dino.box_contains_point(padded_box, center):
-                        eligible.append(
-                            (float(scores[raw_index]), raw_index, mask, center)
+                    score = float(scores[raw_index])
+                    candidate_record["sam_score"] = score
+                    if not mask.any():
+                        candidate_record["reject_reason"] = "empty_raw_mask"
+                        raw_candidate_records.append(candidate_record)
+                        continue
+                    refined_mask, refinement = (
+                        grounding_dino.refine_mask_with_dino_box(
+                            mask,
+                            original_box_xyxy=proposal[
+                                "original_box_xyxy_crop_pixels"
+                            ],
+                            support_box_xyxy=padded_box,
                         )
+                    )
+                    candidate_record["mask_refinement"] = refinement
+                    if not refined_mask.any():
+                        candidate_record["reject_reason"] = (
+                            "empty_after_geometric_refinement"
+                        )
+                        raw_candidate_records.append(candidate_record)
+                        continue
+                    refined_geometry = refinement["refined_geometry"]
+                    if refined_geometry["inside_dino_pixels"] <= 0:
+                        candidate_record["reject_reason"] = (
+                            "no_overlap_with_original_dino_box"
+                        )
+                        raw_candidate_records.append(candidate_record)
+                        continue
+                    center = grounding_dino.mask_center_xy(refined_mask)
+                    candidate_record["refined_center_xy_crop_pixels"] = [
+                        float(center[0]),
+                        float(center[1]),
+                    ]
+                    if not grounding_dino.box_contains_point(padded_box, center):
+                        candidate_record["reject_reason"] = (
+                            "refined_center_outside_prompt_box"
+                        )
+                        raw_candidate_records.append(candidate_record)
+                        continue
+                    selection_score = (
+                        grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+                        * refined_geometry["geometry_score"]
+                        + (1.0 - grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT)
+                        * score
+                    )
+                    candidate_record["eligible"] = True
+                    candidate_record["selection_score"] = float(selection_score)
+                    raw_candidate_records.append(candidate_record)
+                    eligible.append(
+                        {
+                            "sam_score": score,
+                            "raw_index": int(raw_index),
+                            "raw_mask": mask,
+                            "refined_mask": refined_mask,
+                            "center": center,
+                            "refinement": refinement,
+                            "selection_score": float(selection_score),
+                        }
+                    )
 
                 timing_record: dict[str, Any] = {
                     "proposal_id": proposal_id,
@@ -314,19 +378,44 @@ class MultiplexSam3AgentService:
                     "raw_candidate_count": int(len(masks)),
                     "center_valid_candidate_count": int(len(eligible)),
                     "selected_raw_sam_index": None,
+                    "selected_geometry_score": None,
+                    "selected_mask_score": None,
+                    "raw_candidates": raw_candidate_records,
                 }
                 if not eligible:
                     prompt_timings.append(timing_record)
                     continue
 
-                score, raw_index, mask, center = max(
+                selected = max(
                     eligible,
-                    key=lambda item: (item[0], -item[1]),
+                    key=lambda item: (
+                        item["selection_score"],
+                        item["refinement"]["refined_geometry"]["geometry_score"],
+                        item["sam_score"],
+                        -item["raw_index"],
+                    ),
                 )
+                score = float(selected["sam_score"])
+                raw_index = int(selected["raw_index"])
+                raw_mask = selected["raw_mask"]
+                mask = selected["refined_mask"]
+                center = selected["center"]
+                refinement = selected["refinement"]
                 timing_record["selected_raw_sam_index"] = int(raw_index)
+                timing_record["selected_geometry_score"] = float(
+                    refinement["refined_geometry"]["geometry_score"]
+                )
+                timing_record["selected_mask_score"] = float(
+                    selected["selection_score"]
+                )
                 prompt_timings.append(timing_record)
                 mask_box = grounding_dino.mask_bbox_xywh_normalized(mask)
-                mask_artifact = output_dir / f"mask_{len(selected_masks) + 1:03d}.png"
+                artifact_index = len(selected_masks) + 1
+                raw_mask_artifact = output_dir / f"raw_mask_{artifact_index:03d}.png"
+                mask_artifact = output_dir / f"mask_{artifact_index:03d}.png"
+                Image.fromarray(raw_mask.astype(np.uint8) * 255, mode="L").save(
+                    raw_mask_artifact
+                )
                 Image.fromarray(mask.astype(np.uint8) * 255, mode="L").save(
                     mask_artifact
                 )
@@ -350,7 +439,15 @@ class MultiplexSam3AgentService:
                         "sam_box_label": 1,
                         "sam_raw_index": int(raw_index),
                         "sam_score": float(score),
+                        "mask_geometry_score": float(
+                            refinement["refined_geometry"]["geometry_score"]
+                        ),
+                        "mask_selection_score": float(
+                            selected["selection_score"]
+                        ),
                         "sam_prompt_elapsed_s": float(elapsed_s),
+                        "raw_mask_area_pixels": int(raw_mask.sum()),
+                        "raw_mask_artifact": str(raw_mask_artifact),
                         "mask_center_xy_crop_pixels": [
                             float(center[0]),
                             float(center[1]),
@@ -358,6 +455,7 @@ class MultiplexSam3AgentService:
                         "mask_box_xywh_normalized": mask_box,
                         "mask_area_pixels": int(mask.sum()),
                         "mask_artifact": str(mask_artifact),
+                        "mask_refinement": refinement,
                     }
                 )
         finally:

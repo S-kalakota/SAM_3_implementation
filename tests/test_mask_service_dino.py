@@ -345,6 +345,78 @@ class SamBoxPromptTests(unittest.TestCase):
             self.assertEqual(call["box_labels"], [1])
             self.assertEqual(len(call["boxes_xywh"]), 1)
 
+    def test_prefers_geometry_and_saves_raw_and_refined_masks(self) -> None:
+        class FakeModel:
+            def init_state(self, **_kwargs):
+                return {"state": True}
+
+            def add_prompt(self, **_kwargs):
+                tiny = np.zeros((100, 120), dtype=bool)
+                tiny[47:53, 57:63] = True
+                aligned = np.zeros((100, 120), dtype=bool)
+                aligned[35:65, 45:95] = True
+                aligned[5:10, 5:10] = True
+                return 0, {
+                    "out_binary_masks": np.stack([tiny, aligned]),
+                    "out_probs": np.asarray([0.99, 0.75], dtype=np.float32),
+                }
+
+        class FakeRender:
+            def save(self, output_path):
+                Image.new("RGB", (120, 100)).save(output_path)
+
+        service = task6.MultiplexSam3AgentService.__new__(
+            task6.MultiplexSam3AgentService
+        )
+        service.model = FakeModel()
+        service.threshold = 0.05
+        proposal = {
+            "proposal_id": 1,
+            "dino_index": 0,
+            "phrase": "box",
+            "text_label": "box",
+            "dino_score": 0.9,
+            "original_box_xyxy_crop_pixels": [45, 35, 95, 65],
+            "padded_box_xyxy_crop_pixels": [40, 30, 100, 70],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            frame = Path(directory) / "frame.png"
+            output_dir = Path(directory) / "sam"
+            Image.new("RGB", (120, 100)).save(frame)
+            with (
+                mock.patch.object(task6.torch.cuda, "is_available", return_value=False),
+                mock.patch.object(
+                    task6.torch,
+                    "autocast",
+                    return_value=contextlib.nullcontext(),
+                ),
+                mock.patch.object(
+                    task6,
+                    "rle_encode",
+                    return_value=[{"counts": "refined-rle"}],
+                ),
+                mock.patch.object(task6, "visualize", return_value=FakeRender()),
+            ):
+                output_path = service.segment_boxes(
+                    image_path=str(frame),
+                    proposals=[proposal],
+                    output_folder_path=str(output_dir),
+                )
+            output = json.loads(Path(output_path).read_text(encoding="utf-8"))
+            provenance = output["proposal_provenance"][0]
+            raw_mask = np.asarray(Image.open(provenance["raw_mask_artifact"])) > 0
+            refined_mask = np.asarray(Image.open(provenance["mask_artifact"])) > 0
+
+        self.assertEqual(provenance["sam_raw_index"], 1)
+        self.assertAlmostEqual(provenance["sam_score"], 0.75)
+        self.assertEqual(provenance["raw_mask_area_pixels"], 1525)
+        self.assertEqual(provenance["mask_area_pixels"], 1500)
+        self.assertTrue(raw_mask[7, 7])
+        self.assertFalse(refined_mask[7, 7])
+        self.assertTrue(refined_mask[50, 60])
+        self.assertGreater(provenance["mask_geometry_score"], 0.9)
+
 
 class DirectPipelineTests(unittest.TestCase):
     def _dino_generation(self, masks):

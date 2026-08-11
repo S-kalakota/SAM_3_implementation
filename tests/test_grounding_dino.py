@@ -133,6 +133,63 @@ class ProposalGeometryTests(unittest.TestCase):
             [0.05, 0.2, 0.25, 0.2],
         )
 
+    def test_refinement_removes_unsupported_and_tiny_components(self) -> None:
+        mask = np.zeros((100, 120), dtype=bool)
+        mask[35:55, 35:80] = True
+        mask[60:65, 40:50] = True
+        mask[65:67, 60:62] = True
+        mask[5:15, 5:15] = True
+
+        refined, report = grounding_dino.refine_mask_with_dino_box(
+            mask,
+            original_box_xyxy=[30, 30, 90, 70],
+            support_box_xyxy=[25, 25, 95, 75],
+        )
+
+        self.assertTrue(refined[40, 40])
+        self.assertTrue(refined[62, 45])
+        self.assertFalse(refined[65, 60])
+        self.assertFalse(refined[10, 10])
+        self.assertEqual(report["removed_outside_support_pixels"], 100)
+        self.assertEqual(report["removed_component_pixels"], 4)
+        self.assertEqual(report["refined_area_pixels"], 950)
+
+    def test_primary_component_is_anchored_to_original_dino_box(self) -> None:
+        mask = np.zeros((100, 120), dtype=bool)
+        mask[30:70, 5:25] = True
+        mask[40:60, 45:65] = True
+
+        refined, report = grounding_dino.refine_mask_with_dino_box(
+            mask,
+            original_box_xyxy=[40, 35, 70, 65],
+            support_box_xyxy=[0, 20, 75, 80],
+        )
+
+        self.assertFalse(refined[45, 10])
+        self.assertTrue(refined[45, 50])
+        self.assertEqual(report["refined_area_pixels"], 400)
+        retained = [
+            item for item in report["components"] if item["retained"]
+        ]
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0]["retention_reason"], "primary_component")
+
+    def test_geometry_score_prefers_box_aligned_mask_over_tiny_blob(self) -> None:
+        aligned = np.zeros((100, 120), dtype=bool)
+        aligned[30:70, 30:90] = True
+        tiny = np.zeros((100, 120), dtype=bool)
+        tiny[47:53, 57:63] = True
+        box = [30, 30, 90, 70]
+
+        aligned_geometry = grounding_dino.mask_box_geometry(aligned, box)
+        tiny_geometry = grounding_dino.mask_box_geometry(tiny, box)
+
+        self.assertGreater(
+            aligned_geometry["geometry_score"],
+            tiny_geometry["geometry_score"],
+        )
+        self.assertEqual(aligned_geometry["dino_box_coverage"], 1.0)
+
 
 class AdapterBoundaryTests(unittest.TestCase):
     def test_malformed_dino_output_fails_closed(self) -> None:

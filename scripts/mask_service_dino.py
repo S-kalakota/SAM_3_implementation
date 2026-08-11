@@ -1039,6 +1039,21 @@ def dino_candidate_generation(
             "cross_phrase_nms_iou": float(args.dino_nms_iou),
             "box_padding_fraction": float(args.dino_box_padding),
             "max_proposals": int(args.dino_max_proposals),
+            "mask_min_component_pixels": int(
+                grounding_dino.DEFAULT_MASK_MIN_COMPONENT_PIXELS
+            ),
+            "mask_min_component_fraction": float(
+                grounding_dino.DEFAULT_MASK_MIN_COMPONENT_FRACTION
+            ),
+            "mask_min_original_overlap": float(
+                grounding_dino.DEFAULT_MASK_MIN_ORIGINAL_OVERLAP
+            ),
+            "mask_geometry_weight": float(
+                grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+            ),
+            "mask_sam_score_weight": float(
+                1.0 - grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+            ),
         },
         "timing_s": {
             "adapter_total": float(raw_result.get("total_s", dino_elapsed_s)),
@@ -1594,6 +1609,24 @@ if app is not None:
                 "nms_iou": float(args.dino_nms_iou),
                 "max_proposals": int(args.dino_max_proposals),
                 "box_padding_fraction": float(args.dino_box_padding),
+                "mask_refinement": {
+                    "min_component_pixels": int(
+                        grounding_dino.DEFAULT_MASK_MIN_COMPONENT_PIXELS
+                    ),
+                    "min_component_fraction": float(
+                        grounding_dino.DEFAULT_MASK_MIN_COMPONENT_FRACTION
+                    ),
+                    "min_original_overlap": float(
+                        grounding_dino.DEFAULT_MASK_MIN_ORIGINAL_OVERLAP
+                    ),
+                    "geometry_weight": float(
+                        grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+                    ),
+                    "sam_score_weight": float(
+                        1.0 - grounding_dino.DEFAULT_MASK_GEOMETRY_WEIGHT
+                    ),
+                    "adds_pixels": False,
+                },
                 "calibrated_crop_xywh": [
                     int(value) for value in task5.DEFAULT_CROP
                 ],

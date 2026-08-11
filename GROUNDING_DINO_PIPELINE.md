@@ -101,7 +101,13 @@ stage. Qwen receives the unmodified camera crop plus clean candidate crops made
 from the original Grounding DINO boxes. It names the most likely primary object
 in every crop and performs semantic identity matching only; SAM mask overlays
 are retained as human diagnostics but are not shown to Qwen. Existing
-deterministic score, area, spatial, and depth gates remain separate. If DINO has
+deterministic score, area, spatial, and depth gates remain separate. Before
+Qwen, each raw SAM alternative is geometrically refined against its DINO box:
+pixels outside the padded support box are removed, the component best anchored
+to the original box is retained, and only sufficiently large secondary
+components overlapping that box survive. Geometry and SAM confidence jointly
+select the best raw alternative. The refiner never fills holes or adds pixels,
+and both raw and refined masks are saved for audit. If DINO has
 no usable proposal or no score/area-gated box mask, the
 service makes one legacy SAM text call and verifies that result through the same
 fail-closed policy using the legacy boundary input because no DINO box exists.
@@ -154,6 +160,7 @@ frame.png
 dino_proposals.json
 dino_sam/combined_candidates.json
 dino_sam/combined_candidates.png
+dino_sam/raw_mask_001.png ... raw_mask_003.png
 dino_sam/mask_001.png ... mask_003.png
 dino_qwen_candidates.png
 dino_qwen_candidate_zooms.png
