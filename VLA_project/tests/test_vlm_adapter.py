@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import json
+import unittest
+
+from co_bot_vlm.command import parse_transcript_command
+from co_bot_vlm.errors import ValidationError
+from co_bot_vlm.image_source import ImageFrame
+from co_bot_vlm.vlm import (
+    MockVLMBackend,
+    VLM_SCHEMA_VERSION,
+    build_vlm_prompt,
+    build_vlm_response_from_text,
+    parse_vlm_json_output,
+    validate_vlm_output,
+)
+
+
+def vlm_payload(**overrides):
+    values = {
+        "object": "red cup",
+        "visible": True,
+        "confidence": 0.86,
+        "bbox_xyxy": [280, 190, 360, 310],
+        "image_size": [1280, 720],
+    }
+    values.update(overrides)
+    return values
+
+
+class VLMAdapterTests(unittest.TestCase):
+    def test_vlm_accepts_valid_visible_object(self) -> None:
+        raw_output = json.dumps(vlm_payload(object="red cup"))
+
+        result = validate_vlm_output(parse_vlm_json_output(raw_output))
+
+        self.assertIsNotNone(result.grounding)
+        self.assertEqual(result.grounding.object, "red cup")
+        self.assertEqual(result.payload["bbox_xyxy"], [280, 190, 360, 310])
+
+    def test_vlm_accepts_blue_box(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="blue box"))
+
+        self.assertEqual(result.grounding.object, "blue box")
+        self.assertEqual(result.payload["object"], "blue box")
+
+    def test_vlm_accepts_blue_cube(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="blue cube"))
+
+        self.assertEqual(result.grounding.object, "blue cube")
+        self.assertEqual(result.payload["object"], "blue cube")
+
+    def test_vlm_accepts_blue_block(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="blue block"))
+
+        self.assertEqual(result.grounding.object, "blue block")
+        self.assertEqual(result.payload["object"], "blue block")
+
+    def test_vlm_accepts_open_vocabulary_object(self) -> None:
+        result = validate_vlm_output(vlm_payload(object="banana"))
+
+        self.assertEqual(result.grounding.object, "banana")
+        self.assertEqual(result.payload["object"], "banana")
+
+    def test_vlm_accepts_missing_bbox_for_visible_presence(self) -> None:
+        payload = vlm_payload()
+        del payload["bbox_xyxy"]
+
+        result = validate_vlm_output(payload)
+
+        self.assertTrue(result.grounding.visible)
+        self.assertIsNone(result.grounding.bbox_xyxy)
+
+    def test_vlm_response_fills_missing_image_size_from_image_source(self) -> None:
+        payload = vlm_payload(bbox_xyxy=[280, 190, 360, 310])
+        del payload["image_size"]
+
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output=json.dumps(payload),
+            fallback_image_size=[1280, 720],
+        )
+
+        self.assertEqual(response.output["image_size"], [1280, 720])
+
+    def test_vlm_response_fills_compact_not_visible_defaults(self) -> None:
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output=json.dumps({
+                "object": "green water bottle",
+                "visible": False,
+                "image_size": [1280, 720],
+            }),
+        )
+
+        self.assertFalse(response.output["visible"])
+        self.assertEqual(response.output["confidence"], 0.0)
+        self.assertIsNone(response.output["bbox_xyxy"])
+
+    def test_vlm_response_accepts_plain_yes(self) -> None:
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output="YES",
+            target_object="green water bottle",
+            fallback_image_size=[1280, 720],
+        )
+
+        self.assertTrue(response.output["visible"])
+        self.assertEqual(response.output["object"], "green water bottle")
+        self.assertIsNone(response.output["bbox_xyxy"])
+
+    def test_vlm_response_accepts_plain_no(self) -> None:
+        response = build_vlm_response_from_text(
+            backend="qwen",
+            model="test-model",
+            raw_output="NO",
+            target_object="green water bottle",
+            fallback_image_size=[1280, 720],
+        )
+
+        self.assertFalse(response.output["visible"])
+        self.assertEqual(response.output["confidence"], 0.0)
+        self.assertIsNone(response.output["bbox_xyxy"])
+
+    def test_vlm_accepts_not_visible_without_bbox(self) -> None:
+        result = validate_vlm_output(
+            vlm_payload(visible=False, confidence=0.0, bbox_xyxy=None)
+        )
+
+        self.assertFalse(result.grounding.visible)
+        self.assertIsNone(result.grounding.bbox_xyxy)
+
+    def test_vlm_ignores_bbox_when_not_visible(self) -> None:
+        result = validate_vlm_output(
+            vlm_payload(visible=False, confidence=0.0, bbox_xyxy=[0, 0, 0, 0])
+        )
+
+        self.assertFalse(result.grounding.visible)
+        self.assertIsNone(result.grounding.bbox_xyxy)
+
+    def test_vlm_rejects_invalid_bbox(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            validate_vlm_output(vlm_payload(bbox_xyxy=[280, 190, 2000, 310]))
+
+        self.assertEqual(context.exception.code, "invalid_bbox")
+
+    def test_vlm_rejects_motion_control_fields(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            validate_vlm_output(vlm_payload(robot_command={"move": "arm"}))
+
+        self.assertEqual(context.exception.code, "motion_fields_rejected")
+        self.assertEqual(context.exception.details["blocked_fields"], ["robot_command"])
+
+    def test_vlm_rejects_command_fields(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            validate_vlm_output(
+                vlm_payload(action="pick_and_place", destination="drop zone")
+            )
+
+        self.assertEqual(context.exception.code, "vlm_unexpected_fields")
+        self.assertEqual(context.exception.details["unexpected"], ["action", "destination"])
+
+    def test_vlm_rejects_non_json(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            parse_vlm_json_output("The requested object is visible.")
+
+        self.assertEqual(context.exception.code, "vlm_output_not_json")
+        self.assertIn("raw_preview", context.exception.details)
+
+    def test_vlm_accepts_json_object_inside_prose_or_code_fence(self) -> None:
+        payload = parse_vlm_json_output(
+            "Here is the grounding:\n```json\n"
+            + json.dumps(vlm_payload(object="blue box"))
+            + "\n```"
+        )
+
+        self.assertEqual(payload["object"], "blue box")
+
+    def test_vlm_accepts_first_json_object_with_trailing_model_output(self) -> None:
+        payload = parse_vlm_json_output(
+            json.dumps(vlm_payload(object="blue box"))
+            + "\nThe requested object is visible."
+        )
+
+        self.assertEqual(payload["object"], "blue box")
+
+    def test_vlm_rejects_non_standard_json_constant(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            parse_vlm_json_output('{"action":"pick_and_place","confidence":NaN}')
+
+        self.assertEqual(context.exception.code, "vlm_output_not_json")
+
+    def test_mock_backend_records_backend_model_and_schema_metadata(self) -> None:
+        response = MockVLMBackend().ground(
+            parse_transcript_command("pick up the cup to the drop zone"),
+            ImageFrame(
+                source_type="image_file",
+                path="/tmp/frame.png",
+                width=640,
+                height=480,
+            ),
+        )
+
+        self.assertEqual(response.backend, "mock")
+        self.assertEqual(response.model, "deterministic-contract-v1")
+        self.assertEqual(response.output["object"], "cup")
+        self.assertEqual(response.metadata["schema_version"], VLM_SCHEMA_VERSION)
+        self.assertTrue(response.metadata["motion_control_fields_rejected"])
+        self.assertTrue(response.metadata["open_vocabulary_objects"])
+
+    def test_vlm_prompt_is_grounding_only(self) -> None:
+        prompt = build_vlm_prompt("blue box", [1024, 768])
+
+        self.assertIn("Requested target object: blue box", prompt)
+        self.assertIn("answer only whether", prompt)
+        self.assertIn("Reply with exactly YES", prompt)
+        self.assertIn("exactly NO", prompt)
+        self.assertNotIn("bbox_xyxy", prompt)
+
+
+if __name__ == "__main__":
+    unittest.main()

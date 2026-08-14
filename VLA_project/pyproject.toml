@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "co-bot-vlm"
+version = "0.1.0"
+description = "Skeleton VLM object-existence verification pipeline for Co-Bot."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-python>=4.10",
+]
+
+[project.optional-dependencies]
+qwen = [
+    "torch>=2.12",
+    "torchvision>=0.27",
+    "transformers>=5.12",
+    "accelerate>=1.14",
+    "qwen-vl-utils>=0.0.5",
+    "huggingface-hub>=1.21",
+    "pillow>=12.2",
+]
+voice = [
+    "torch>=2.12",
+    "transformers>=5.12",
+    "numpy>=2.0",
+    "huggingface-hub>=1.21",
+]
+
+[project.scripts]
+co-bot-vlm = "co_bot_vlm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
