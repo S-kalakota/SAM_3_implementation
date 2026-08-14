@@ -763,8 +763,9 @@ def summarize_kept(
 def build_verifier_candidate_records(
     kept: list[tuple[np.ndarray, float]],
     candidates: list[dict[str, Any]],
+    depth_np: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
-    """Describe score/area-gated candidates using one-based verifier IDs."""
+    """Describe candidates with measured pixels/depth for Qwen ranking."""
 
     kept_candidates = [candidate for candidate in candidates if candidate["kept"]]
     if len(kept_candidates) != len(kept):
@@ -796,6 +797,14 @@ def build_verifier_candidate_records(
             ],
             "crop_size_wh_pixels": [int(width), int(height)],
         }
+        if depth_np is not None:
+            stats = mask_depth.mask_depth_stats(mask, depth_np)
+            record.update(
+                {
+                    "median_depth_m": stats["median"],
+                    "valid_depth_fraction": stats["valid_fraction"],
+                }
+            )
         provenance = candidate.get("proposal_provenance")
         if isinstance(provenance, dict):
             record.update(
@@ -827,12 +836,14 @@ def verify_candidates_with_qwen(
     kept: list[tuple[np.ndarray, float]],
     candidates: list[dict[str, Any]],
     args: argparse.Namespace,
+    depth_np: np.ndarray | None = None,
+    grounding_intent_value: dict[str, Any] | None = None,
 ) -> tuple[
     list[tuple[np.ndarray, float]],
     list[dict[str, Any]],
     dict[str, Any],
 ]:
-    """Run the fail-closed Qwen visual gate before depth or spatial selection."""
+    """Ask Qwen for exactly one full-intent, mask-aware candidate."""
 
     verification_started = time.monotonic()
     qwen_call_timings: list[float] = []
@@ -871,7 +882,11 @@ def verify_candidates_with_qwen(
         return kept, candidates, verification
 
     try:
-        candidate_records = build_verifier_candidate_records(kept, candidates)
+        candidate_records = build_verifier_candidate_records(
+            kept,
+            candidates,
+            depth_np=depth_np,
+        )
         candidate_overlay_path = req_dir / f"{artifact_stem}_qwen_candidates.png"
         candidate_overlay = candidate_verifier.render_numbered_candidates(
             rgb_np,
@@ -907,12 +922,8 @@ def verify_candidates_with_qwen(
             encoding="utf-8",
         )
 
-        identity_schema = (
-            candidate_verifier.identity_verifier_json_schema(
-                len(candidate_records)
-            )
-            if candidate_clean_crops is not None
-            else None
+        ranked_schema = candidate_verifier.ranked_mask_verifier_json_schema(
+            len(candidate_records)
         )
 
         def send_generate_request(messages: list[dict[str, Any]]) -> str:
@@ -925,39 +936,28 @@ def verify_candidates_with_qwen(
                     local_files_only=not args.allow_qwen_downloads,
                     device_map=args.qwen_device_map,
                     do_sample=False,
-                    response_prefix=(
-                        '{"decision":' if identity_schema is None else None
-                    ),
-                    json_schema=identity_schema,
+                    response_prefix=None,
+                    json_schema=ranked_schema,
                 )
             finally:
                 qwen_call_timings.append(time.monotonic() - qwen_started)
 
-        if candidate_clean_crops is not None:
-            verification = candidate_verifier.run_identity_verifier(
-                request=request,
-                target_phrase=target_phrase,
-                selector=selector,
-                frame_path=frame_path,
-                candidate_crop_path=Path(candidate_clean_crops["output"]),
-                candidate_records=candidate_records,
-                send_generate_request=send_generate_request,
-                min_select_confidence=args.verifier_min_confidence,
-            )
-            verifier_input_mode = "clean_dino_crops_identity_only"
-        else:
-            verification = candidate_verifier.run_visual_verifier(
-                request=request,
-                target_phrase=target_phrase,
-                selector=selector,
-                frame_path=frame_path,
-                candidate_overlay_path=candidate_overlay_path,
-                candidate_zoom_path=candidate_zoom_path,
-                candidate_records=candidate_records,
-                send_generate_request=send_generate_request,
-                min_select_confidence=args.verifier_min_confidence,
-            )
-            verifier_input_mode = "legacy_mask_boundary"
+        verification = candidate_verifier.run_ranked_mask_verifier(
+            request=request,
+            target_phrase=target_phrase,
+            selector=selector,
+            frame_path=frame_path,
+            candidate_overlay_path=candidate_overlay_path,
+            candidate_zoom_path=candidate_zoom_path,
+            candidate_records=candidate_records,
+            send_generate_request=send_generate_request,
+            min_select_confidence=args.verifier_min_confidence,
+            grounding_intent_value=grounding_intent_value,
+            candidate_crop_path=None
+            if candidate_clean_crops is None
+            else Path(candidate_clean_crops["output"]),
+        )
+        verifier_input_mode = "numbered_masks_ranked_single_choice"
         verification = candidate_verifier.apply_max_area_fraction_policy(
             verification,
             candidate_records,
@@ -967,7 +967,8 @@ def verify_candidates_with_qwen(
             {
                 "model": args.qwen_model,
                 "target_phrase": target_phrase,
-                "selector_deferred": selector,
+                "selector_deferred": None,
+                "selector_requested": selector,
                 "min_select_confidence": float(args.verifier_min_confidence),
                 "max_area_fraction": float(args.verifier_max_area_fraction),
                 "candidate_count": len(candidate_records),
@@ -979,7 +980,7 @@ def verify_candidates_with_qwen(
                 else candidate_clean_crops["output"],
                 "candidate_manifest": str(manifest_path),
                 "verifier_input_mode": verifier_input_mode,
-                "json_schema_constrained": identity_schema is not None,
+                "json_schema_constrained": True,
             }
         )
     except Exception as exc:
@@ -1599,6 +1600,8 @@ def direct_segment(
         kept=kept,
         candidates=candidates,
         args=args,
+        depth_np=depth_np,
+        grounding_intent_value=intent.get("grounding_intent"),
     )
     stage_timings["qwen_s"] = float(verification.get("inference_s", 0.0))
     stage_timings["qwen_stage_s"] = float(verification.get("elapsed_s", 0.0))
@@ -1760,6 +1763,8 @@ def agent_fallback_segment(
         kept=kept,
         candidates=candidates,
         args=args,
+        depth_np=depth_np,
+        grounding_intent_value=intent.get("grounding_intent"),
     )
     selection_started = time.monotonic()
     kept, candidates, selection = select_spatial_mask(
@@ -1856,9 +1861,14 @@ def build_selected_mask_record(
         int(xs.max() - xs.min() + 1),
         int(ys.max() - ys.min() + 1),
     ]
-    # Match the historical ROS fallback, which derives the target pixel from
-    # the normalized SAM bounding-box center rather than the mask centroid.
+    # The robot must aim at the segmented object's center, not the center of a
+    # rectangular proposal that can include asymmetric background.  ``kept``
+    # already contains the final geometry/depth-refined mask.
     center = [
+        float(xs.mean()),
+        float(ys.mean()),
+    ]
+    bbox_center = [
         float(bbox[0] + bbox[2] / 2.0),
         float(bbox[1] + bbox[3] / 2.0),
     ]
@@ -1900,6 +1910,11 @@ def build_selected_mask_record(
         "bbox_xywh_normalized": grounding_dino.mask_bbox_xywh_normalized(mask),
         "center_xy_crop_pixels": center,
         "center_xy_full_pixels": full_center,
+        "center_method": "sam_mask_centroid",
+        "bbox_center_xy_crop_pixels": bbox_center,
+        "bbox_center_xy_full_pixels": grounding_dino.crop_point_to_full(
+            bbox_center, crop_xywh
+        ),
         "crop_to_full_offset_xy_pixels": [offset_x, offset_y],
         "mask_artifact": None
         if provenance is None

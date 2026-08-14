@@ -8,6 +8,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_vla_pick_target
     test/test_vla_pick_target.py
   )
+  ament_add_pytest_test(test_d0_point_grab
+    test/test_d0_point_grab.py
+  )
 endif()
 
 install(DIRECTORY urdf config launch

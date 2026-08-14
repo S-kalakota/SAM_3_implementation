@@ -6,9 +6,8 @@ SAM 3.1, converting ZED depth into an FR5 base-frame target, and planning a
 pickup with ROS 2 and MoveIt.
 
 The default workflow does **not** move the robot. It creates an audit image and
-target file, then plans a hover and pickup. Physical movement requires an
-explicit `--execute` flag and separate typed confirmations for the hover and
-pickup stages.
+target file, then plans the complete pickup. Physical movement requires an
+explicit `--execute` flag. There is no additional typed confirmation.
 
 ## Architecture
 
@@ -25,7 +24,7 @@ flowchart LR
     I --> J[Calibrated camera<br/>to FR5 base XYZ]
     J --> K[Audit PNG +<br/>versioned target JSON]
     K --> L[MoveIt plan only]
-    L -->|--execute + HOVER/PICK| M[FR5 motion]
+    L -->|--execute| M[FR5 motion]
 ```
 
 The integrated robot path uses the bounded `./sam3-dino` service:
@@ -36,11 +35,14 @@ The integrated robot path uses the bounded `./sam3-dino` service:
 3. The ZED 2i captures a fresh HD720 RGB/depth frame.
 4. Grounding DINO proposes at most three open-vocabulary boxes.
 5. SAM 3.1 refines each box into a mask.
-6. Qwen2.5-VL checks clean crops for target identity; spatial selectors are
-   resolved deterministically after semantic verification.
-7. Mask geometry, workspace, depth coverage, depth spread, physical-size, and
-   calibration-envelope gates must all pass.
-8. The selected depth point is transformed from `zed_left_optical` into
+6. Qwen2.5-VL compares the raw frame, numbered mask overlays, mask zooms, clean
+   crops, the structured prompt, and measured candidate geometry. It must return
+   zero or one best mask; pixel/depth selectors are checked deterministically.
+7. Mask geometry, workspace, depth coverage, physical-size, and
+   calibration-envelope gates must all pass. The final SAM mask centroid is
+   used for image X/Y with robust masked-median depth for Z; proposal-box center
+   is retained only as audit evidence.
+8. The selected center point is transformed from `zed_left_optical` into
    `base_link`, then written to `/tmp/fr5_vla_target.json` with an audit image.
 9. ROS 2/MoveIt plans the hover and pickup. Execution remains a separate,
    explicit action.
@@ -249,8 +251,8 @@ Terminal 2:
 ```
 
 The runner waits for live joints, captures a fresh frame, produces and opens an
-audit image, writes a checked target, and plans both the hover and pickup. It
-then exits without moving the arm.
+audit image, writes a checked target, and plans the complete pickup. It then
+exits without moving the arm.
 
 Review these artifacts after every request:
 
@@ -262,16 +264,30 @@ jq . /tmp/fr5_vla_target.json
 ### Physical execution
 
 Physical execution is experimental. Clear the entire workspace, start from a
-known pose, verify the calibration and audit overlay, review both printed
-plans, and keep a hand on the e-stop. Then run:
+known pose, verify the calibration and audit overlay, review the printed pickup
+plan, and keep a hand on the e-stop. Then run:
 
 ```bash
 ./robot_ws/scripts/run_vla_pickup.sh --execute \
   "pick up the grey and orange box"
 ```
 
-The process still refuses to move until `HOVER` is typed, then requires a
-separate `PICK` confirmation after the hover is physically verified.
+Supplying `--execute` starts motion immediately after target creation and a
+successful motion preflight; there is no typed `PICK` prompt. The pickup
+executor retains its internal 100 mm approach waypoint, then descends, grasps,
+retreats, and returns through the validated trajectory sequence without a
+separate hover pause. A clean empty close triggers up to two retries, 10 mm
+deeper each time, for three total default contact depths of 5, 15, and 25 mm.
+The fingertip TCP also receives a fixed 47 mm downward correction in
+`base_link`. This correction is strictly `[0, 0, -0.047]` metres and therefore
+cannot shift the detected object center in X or Y when the wrist is tilted. It
+does not alter the wrist-to-TCP calibration. Override it with
+`--fingertip-down-offset-mm` on `d0_point_grab.py`.
+
+A close that remains above 95% open is treated as side contact or target
+misalignment, not a successful grasp. The executor reopens before retreat and
+does not make a deeper retry from that unsafe outcome. A verified grasp must
+stop between 68% and 95% with the default close command and obstruction delta.
 
 ### Voice input
 
@@ -311,12 +327,14 @@ The default DINO path is fail-closed and requires:
 
 - schema-valid intent with a request/response SHA-256 identity match;
 - no unsupported source-region or relational semantics;
-- at most three DINO proposals and one unambiguous final mask;
+- at most three DINO proposals and a schema-constrained Qwen result containing
+  zero or one final mask;
 - Qwen identity confidence of at least `0.70`;
 - SAM presence score of at least `0.10`;
 - mask area below `25%` of the workspace crop;
 - at least `80%` valid depth and 20 valid depth pixels;
-- no more than `75 mm` p90-p10 depth spread;
+- a valid object-center target using robust masked-median depth (depth spread
+  is retained as evidence but is not a rejection boundary);
 - plausible projected object size and calibrated camera/base envelopes;
 - base-surface height within the calibrated workspace;
 - agreement between back-projected and service-provided camera XYZ.
@@ -334,7 +352,7 @@ The unbounded SAM/Qwen agent fallback is disabled for robot target creation.
 - Depth-discontinuity trimming that reduces masks spilling onto a table or
   neighboring object when the ZED evidence is reliable.
 - Reproducible artifacts for every perception decision.
-- Plan-only operation by default and two-stage confirmation for motion.
+- Plan-only operation by default; `--execute` is the explicit motion opt-in.
 - Offline unit coverage for intent contracts, proposal geometry, mask/depth
   gates, relation geometry, release gates, command parsing, and robot-target
   construction.

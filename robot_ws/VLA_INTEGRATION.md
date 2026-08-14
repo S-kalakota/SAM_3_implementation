@@ -27,9 +27,18 @@ In a second terminal, create a target and run the complete no-motion review:
 The runner allows 45 seconds for a freshly captured frame to complete the
 current Qwen verification stage and waits up to 45 seconds for the FR5 driver
 to publish live joints; keep the scene still during vision capture. It opens
-the audit image and runs both hover and pickup planning commands.
-Physical motion requires an explicit `--execute` plus typed `HOVER` and `PICK`
-confirmations after the audit and plan are reviewed.
+the audit image and plans the complete pickup sequence.
+Physical motion requires an explicit `--execute`; there is no subsequent typed
+confirmation, so motion starts immediately after target creation and successful
+motion preflight. The pickup still uses an internal 100 mm approach waypoint
+but does not pause for a separate hover. A clean empty close retries at 10 mm
+deeper increments, for three total default attempts at 5, 15, and 25 mm below
+the selected surface. The fingertip TCP also receives a fixed 47 mm downward
+correction in `base_link`: `[0, 0, -0.047]` metres. It never adds an X/Y
+correction when the wrist is tilted, and the calibrated TCP transform itself
+is not changed.
+A close that remains more than 95% open is classified as likely side contact,
+reopened before retreat, and is not eligible for a deeper retry.
 
 ## 1. Start the resident perception service
 
@@ -88,8 +97,10 @@ The complete path is fail-closed and requires:
 - deterministic spatial-selector resolution after semantic verification;
 - conservative geometry and ZED depth-discontinuity mask refinement;
 - workspace membership and a mask score greater than `0.10`;
-- at least 80% valid masked depth, at least 20 depth pixels, and no more than
-  75 mm p90-p10 depth spread;
+- at least 80% valid masked depth and at least 20 depth pixels; depth spread is
+  recorded as evidence but does not reject a center target;
+- a final SAM mask-centroid image target consistent within 40 mm of the
+  registered ZED masked-XYZ reference;
 - plausible projected object size and calibrated camera/base workspace bounds;
 - a calibrated surface-height range and camera-XYZ consistency.
 

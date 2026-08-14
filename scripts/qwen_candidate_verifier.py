@@ -29,6 +29,19 @@ IDENTITY_ASSESSMENT_KEYS = {
     "most_likely_object",
     "matches_target",
 }
+RANKED_RESPONSE_KEYS = {
+    "decision",
+    "selected_candidate_ids",
+    "candidate_assessments",
+    "confidence",
+    "reason",
+}
+RANKED_ASSESSMENT_KEYS = {
+    "candidate_id",
+    "most_likely_object",
+    "matches_target",
+    "match_score",
+}
 MASK_COLORS_RGB = (
     (255, 64, 64),
     (64, 192, 255),
@@ -94,6 +107,61 @@ def identity_verifier_json_schema(candidate_count: int) -> dict[str, Any]:
     }
 
 
+def ranked_mask_verifier_json_schema(candidate_count: int) -> dict[str, Any]:
+    """Return a strict schema that permits at most one selected mask."""
+
+    if isinstance(candidate_count, bool) or not isinstance(candidate_count, int):
+        raise ValueError("candidate_count must be an integer")
+    if candidate_count < 1:
+        raise ValueError("candidate_count must be positive")
+    candidate_id = {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": candidate_count,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "decision": {"type": "string", "enum": ["select", "no_match"]},
+            "selected_candidate_ids": {
+                "type": "array",
+                "items": candidate_id,
+                "maxItems": 1,
+                "uniqueItems": True,
+            },
+            "candidate_assessments": {
+                "type": "array",
+                "minItems": candidate_count,
+                "maxItems": candidate_count,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": candidate_id,
+                        "most_likely_object": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "matches_target": {"type": "boolean"},
+                        "match_score": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                        },
+                    },
+                    "required": sorted(RANKED_ASSESSMENT_KEYS),
+                    "additionalProperties": False,
+                },
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            },
+            "reason": {"type": "string", "minLength": 1},
+        },
+        "required": sorted(RANKED_RESPONSE_KEYS),
+        "additionalProperties": False,
+    }
 def _identity_candidate_id(value: Any, *, field: str) -> int:
     """Normalize an unambiguous identity ID while rejecting ambiguous text."""
 
@@ -317,6 +385,239 @@ def parse_identity_verifier_response(
     }
 
 
+def _finite_candidate_number(value: Any, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise VerifierResponseError(f"{field} must be a finite number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise VerifierResponseError(f"{field} must be a finite number")
+    return number
+
+
+def spatial_winner_ids(
+    candidate_records: list[dict[str, Any]],
+    eligible_ids: list[int],
+    selector: str,
+) -> set[int]:
+    """Return IDs tied at the measured spatial/size selector extreme."""
+
+    records_by_id = {
+        int(record["candidate_id"]): record for record in candidate_records
+    }
+    if not eligible_ids:
+        raise VerifierResponseError("a spatial selector has no matching candidates")
+    missing = [candidate_id for candidate_id in eligible_ids if candidate_id not in records_by_id]
+    if missing:
+        raise VerifierResponseError(f"candidate metadata is missing IDs {missing}")
+
+    values: dict[int, float] = {}
+    for candidate_id in eligible_ids:
+        record = records_by_id[candidate_id]
+        if selector in {"leftmost", "rightmost", "topmost", "bottommost"}:
+            center = record.get("center_xy_crop_pixels")
+            if not isinstance(center, (list, tuple)) or len(center) != 2:
+                raise VerifierResponseError(
+                    f"candidate {candidate_id} has no measured center pixels"
+                )
+            axis = 0 if selector in {"leftmost", "rightmost"} else 1
+            value = center[axis]
+            field = f"candidate {candidate_id} center pixel"
+        elif selector in {"nearest", "farthest"}:
+            value = record.get("median_depth_m")
+            field = f"candidate {candidate_id} median depth"
+        elif selector in {"largest", "smallest"}:
+            value = record.get("area_pixels")
+            field = f"candidate {candidate_id} mask area"
+        else:
+            raise VerifierResponseError(f"unsupported selector {selector!r}")
+        values[candidate_id] = _finite_candidate_number(value, field=field)
+
+    choose_max = selector in {"rightmost", "bottommost", "farthest", "largest"}
+    extreme = (max if choose_max else min)(values.values())
+    return {
+        candidate_id
+        for candidate_id, value in values.items()
+        if math.isclose(value, extreme, rel_tol=0.0, abs_tol=1e-9)
+    }
+
+
+def parse_ranked_mask_verifier_response(
+    text: str,
+    candidate_records: list[dict[str, Any]],
+    selector: str | None,
+) -> dict[str, Any]:
+    """Parse one ranked mask choice and verify its measured location rule."""
+
+    candidate_count = len(candidate_records)
+    if candidate_count < 1:
+        raise ValueError("candidate_records must not be empty")
+    if not isinstance(text, str) or not text.strip():
+        raise VerifierResponseError("response is empty")
+    try:
+        value = json.loads(text.strip())
+    except json.JSONDecodeError as exc:
+        raise VerifierResponseError(f"response is not JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise VerifierResponseError("response must be a JSON object")
+    keys = set(value)
+    if keys != RANKED_RESPONSE_KEYS:
+        missing = sorted(RANKED_RESPONSE_KEYS - keys)
+        extra = sorted(keys - RANKED_RESPONSE_KEYS)
+        raise VerifierResponseError(
+            f"response keys are invalid; missing={missing}, extra={extra}"
+        )
+
+    decision = value["decision"]
+    if decision not in {"select", "no_match"}:
+        raise VerifierResponseError("decision must be 'select' or 'no_match'")
+    selected_values = value["selected_candidate_ids"]
+    if not isinstance(selected_values, list):
+        raise VerifierResponseError("selected_candidate_ids must be a list")
+    selected = [
+        _identity_candidate_id(item, field="candidate ID")
+        for item in selected_values
+    ]
+    if len(selected) > 1:
+        raise VerifierResponseError("at most one candidate may be selected")
+    if any(item < 1 or item > candidate_count for item in selected):
+        raise VerifierResponseError(
+            f"candidate IDs must be in the range 1..{candidate_count}"
+        )
+    if decision == "select" and len(selected) != 1:
+        raise VerifierResponseError("select requires exactly one candidate ID")
+    if decision == "no_match" and selected:
+        raise VerifierResponseError("no_match requires an empty candidate list")
+
+    assessments = value["candidate_assessments"]
+    if not isinstance(assessments, list):
+        raise VerifierResponseError("candidate_assessments must be a list")
+    parsed_assessments = []
+    seen_ids = set()
+    for assessment in assessments:
+        if not isinstance(assessment, dict):
+            raise VerifierResponseError("each candidate assessment must be an object")
+        assessment_keys = set(assessment)
+        if assessment_keys != RANKED_ASSESSMENT_KEYS:
+            missing = sorted(RANKED_ASSESSMENT_KEYS - assessment_keys)
+            extra = sorted(assessment_keys - RANKED_ASSESSMENT_KEYS)
+            raise VerifierResponseError(
+                "candidate assessment keys are invalid; "
+                f"missing={missing}, extra={extra}"
+            )
+        candidate_id = _identity_candidate_id(
+            assessment["candidate_id"],
+            field="assessment candidate_id",
+        )
+        if candidate_id < 1 or candidate_id > candidate_count:
+            raise VerifierResponseError(
+                f"assessment candidate_id must be in 1..{candidate_count}"
+            )
+        if candidate_id in seen_ids:
+            raise VerifierResponseError("assessment candidate IDs must be unique")
+        seen_ids.add(candidate_id)
+        label = assessment["most_likely_object"]
+        if not isinstance(label, str) or not label.strip():
+            raise VerifierResponseError(
+                "most_likely_object must be a non-empty string"
+            )
+        matches_target = _identity_boolean(
+            assessment["matches_target"],
+            field="matches_target",
+        )
+        match_score = _finite_candidate_number(
+            assessment["match_score"],
+            field="match_score",
+        )
+        if not 0.0 <= match_score <= 1.0:
+            raise VerifierResponseError("match_score must be in [0, 1]")
+        parsed_assessments.append(
+            {
+                "candidate_id": candidate_id,
+                "most_likely_object": label.strip(),
+                "matches_target": matches_target,
+                "match_score": match_score,
+            }
+        )
+    if seen_ids != set(range(1, candidate_count + 1)):
+        raise VerifierResponseError(
+            "candidate_assessments must contain every candidate exactly once"
+        )
+
+    matching = [
+        assessment for assessment in parsed_assessments
+        if assessment["matches_target"]
+    ]
+    matching_ids = [assessment["candidate_id"] for assessment in matching]
+    if decision == "no_match":
+        if matching:
+            raise VerifierResponseError(
+                "no_match requires every matches_target value to be false"
+            )
+    else:
+        selected_id = selected[0]
+        if selected_id not in matching_ids:
+            raise VerifierResponseError(
+                "the selected candidate must have matches_target=true"
+            )
+        if selector is None:
+            best_score = max(assessment["match_score"] for assessment in matching)
+            best_ids = {
+                assessment["candidate_id"]
+                for assessment in matching
+                if math.isclose(
+                    assessment["match_score"],
+                    best_score,
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                )
+            }
+            if selected_id not in best_ids:
+                raise VerifierResponseError(
+                    "selected candidate does not have the highest visual match score"
+                )
+        else:
+            winners = spatial_winner_ids(
+                candidate_records,
+                matching_ids,
+                selector,
+            )
+            if selected_id not in winners:
+                raise VerifierResponseError(
+                    f"selected candidate contradicts measured selector {selector!r}; "
+                    f"expected one of {sorted(winners)}"
+                )
+
+    confidence = _finite_candidate_number(value["confidence"], field="confidence")
+    if not 0.0 <= confidence <= 1.0:
+        raise VerifierResponseError("confidence must be in [0, 1]")
+    reason = value["reason"]
+    if not isinstance(reason, str) or not reason.strip():
+        raise VerifierResponseError("reason must be a non-empty string")
+    lowered_reason = reason.lower()
+    forbidden_score_reasons = (
+        "sam score",
+        "sam confidence",
+        "dino score",
+        "dino confidence",
+        "model confidence",
+    )
+    if any(phrase in lowered_reason for phrase in forbidden_score_reasons):
+        raise VerifierResponseError(
+            "reason must use visual mask evidence, not SAM/DINO confidence"
+        )
+    return {
+        "decision": decision,
+        "selected_candidate_ids": selected,
+        "candidate_assessments": sorted(
+            parsed_assessments,
+            key=lambda item: item["candidate_id"],
+        ),
+        "confidence": confidence,
+        "reason": reason.strip(),
+        "selector": selector,
+    }
+
+
 def render_numbered_candidates(
     rgb_np: np.ndarray,
     kept: list[tuple[np.ndarray, float]],
@@ -472,7 +773,7 @@ def render_candidate_zooms(
         ] = rendered_crop
         cv2.putText(
             sheet,
-            f"Candidate {position + 1}  SAM {score:.2f}",
+            f"Candidate {position + 1}",
             (tile_x + 10, tile_y + 25),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -768,6 +1069,227 @@ def build_verifier_messages(
             ],
         },
     ]
+
+
+def build_ranked_mask_verifier_messages(
+    *,
+    request: str,
+    target_phrase: str,
+    selector: str | None,
+    frame_path: Path,
+    candidate_overlay_path: Path,
+    candidate_zoom_path: Path,
+    candidate_records: list[dict[str, Any]],
+    grounding_intent_value: dict[str, Any] | None = None,
+    candidate_crop_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Build a full-intent, single-choice prompt over numbered SAM masks."""
+
+    system_prompt = (
+        "You are the final visual ranker for a robot pick target. Image 1 is the "
+        "unmodified camera crop. Image 2 shows numbered SAM masks with colored "
+        "boundaries. Image 3 shows enlarged views of those same masks. If supplied, "
+        "Image 4 contains clean Grounding DINO crops for identity details. Inspect "
+        "what physical object each mask boundary actually encloses; a requested "
+        "object merely visible inside a mask around a shelf, bin, cart, fixture, or "
+        "background is not a match. Use the canonical structured intent as the "
+        "authoritative breakdown of category and visible attributes. Assess every "
+        "candidate with a semantic-and-boundary match_score from 0 to 1. If no "
+        "candidate matches, return no_match. Otherwise select exactly one candidate. "
+        "Ignore SAM confidence, DINO confidence, proposal order, and mask area unless "
+        "the explicit selector is largest or smallest. Never copy a model confidence "
+        "into match_score; match_score must be your independent visual judgment of "
+        "semantic identity and how tightly the colored boundary follows that object. "
+        "Without a selector, select the matching candidate with the highest "
+        "match_score. With a selector, first identify the semantic matches and then "
+        "apply the supplied measured metadata: smaller center x is leftmost, larger "
+        "center x is rightmost, smaller center y is topmost, larger center y is "
+        "bottommost, smaller median_depth_m is nearest, larger median_depth_m is "
+        "farthest, and area_pixels determines largest or smallest. Pixel origin is "
+        "the top-left. Never estimate or invent pixel/depth values; use only the "
+        "candidate metadata. Return JSON only with exactly decision, "
+        "selected_candidate_ids, candidate_assessments, confidence, reason. "
+        "selected_candidate_ids must contain exactly one integer for select or be [] "
+        "for no_match. candidate_assessments must contain every candidate exactly "
+        "once with only candidate_id, most_likely_object, matches_target, and "
+        "match_score. Use unquoted JSON integers, booleans, and numbers. Do not use "
+        "markdown or add other text."
+    )
+    intent_details = (
+        json.dumps(grounding_intent_value, separators=(",", ":"))
+        if grounding_intent_value is not None
+        else "null"
+    )
+    qwen_metadata_keys = {
+        "candidate_id",
+        "area_pixels",
+        "area_fraction",
+        "center_xy_crop_pixels",
+        "bbox_xywh_crop_pixels",
+        "crop_size_wh_pixels",
+        "median_depth_m",
+        "valid_depth_fraction",
+    }
+    qwen_candidate_records = [
+        {
+            key: record[key]
+            for key in qwen_metadata_keys
+            if key in record
+        }
+        for record in candidate_records
+    ]
+    candidate_details = json.dumps(
+        qwen_candidate_records,
+        separators=(",", ":"),
+    )
+    selector_text = selector if selector is not None else "none"
+    user_text = (
+        f"Original robot request: {request!r}. Semantic target phrase: "
+        f"{target_phrase!r}. Canonical structured intent: {intent_details}. "
+        f"Requested selector: {selector_text!r}. Measured candidate metadata: "
+        f"{candidate_details}. Compare every numbered mask to the prompt breakdown, "
+        "then return the one best candidate or no_match using only the required JSON."
+    )
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": "Image 1: unmodified camera crop."},
+        {"type": "image", "image": str(frame_path)},
+        {"type": "text", "text": "Image 2: numbered SAM mask boundaries."},
+        {"type": "image", "image": str(candidate_overlay_path)},
+        {"type": "text", "text": "Image 3: enlarged numbered SAM masks."},
+        {"type": "image", "image": str(candidate_zoom_path)},
+    ]
+    if candidate_crop_path is not None:
+        content.extend(
+            [
+                {
+                    "type": "text",
+                    "text": "Image 4: clean numbered DINO crops for identity detail.",
+                },
+                {"type": "image", "image": str(candidate_crop_path)},
+            ]
+        )
+    content.append({"type": "text", "text": user_text})
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": content},
+    ]
+
+
+def run_ranked_mask_verifier(
+    *,
+    request: str,
+    target_phrase: str,
+    selector: str | None,
+    frame_path: Path,
+    candidate_overlay_path: Path,
+    candidate_zoom_path: Path,
+    candidate_records: list[dict[str, Any]],
+    send_generate_request: Callable[[list[dict[str, Any]]], str],
+    min_select_confidence: float,
+    grounding_intent_value: dict[str, Any] | None = None,
+    candidate_crop_path: Path | None = None,
+) -> dict[str, Any]:
+    """Ask Qwen for one best mask and fail closed on schema/geometry drift."""
+
+    if not 0.0 <= min_select_confidence <= 1.0:
+        raise ValueError("min_select_confidence must be in [0, 1]")
+    if not candidate_records:
+        raise ValueError("candidate_records must not be empty")
+    messages = build_ranked_mask_verifier_messages(
+        request=request,
+        target_phrase=target_phrase,
+        selector=selector,
+        frame_path=frame_path,
+        candidate_overlay_path=candidate_overlay_path,
+        candidate_zoom_path=candidate_zoom_path,
+        candidate_records=candidate_records,
+        grounding_intent_value=grounding_intent_value,
+        candidate_crop_path=candidate_crop_path,
+    )
+    attempts = []
+    for attempt_number in (1, 2):
+        try:
+            raw = send_generate_request(messages)
+        except Exception as exc:
+            attempts.append(
+                {"attempt": attempt_number, "raw_response": None, "error": repr(exc)}
+            )
+            return {
+                "status": "error",
+                "decision": None,
+                "selected_candidate_ids": [],
+                "model_selected_candidate_ids": [],
+                "candidate_assessments": [],
+                "confidence": None,
+                "reason": f"Qwen ranked-mask verifier inference failed: {exc!r}",
+                "attempts": attempts,
+            }
+        try:
+            parsed = parse_ranked_mask_verifier_response(
+                raw,
+                candidate_records,
+                selector,
+            )
+        except VerifierResponseError as exc:
+            attempts.append(
+                {
+                    "attempt": attempt_number,
+                    "raw_response": raw,
+                    "error": str(exc),
+                }
+            )
+            if attempt_number == 1:
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": str(raw)[:1500]},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Invalid single-choice response: {exc}. Retry once. "
+                                "Assess every candidate, use the exact measured "
+                                "metadata for any selector, and return zero or one "
+                                "selected candidate in the required JSON schema."
+                            ),
+                        },
+                    ]
+                )
+                continue
+            return {
+                "status": "error",
+                "decision": None,
+                "selected_candidate_ids": [],
+                "model_selected_candidate_ids": [],
+                "candidate_assessments": [],
+                "confidence": None,
+                "reason": "Qwen ranked-mask verifier returned invalid JSON twice",
+                "attempts": attempts,
+            }
+
+        attempts.append(
+            {"attempt": attempt_number, "raw_response": raw, "error": None}
+        )
+        if parsed["decision"] == "no_match":
+            status = "no_match"
+            selected = []
+        elif parsed["confidence"] < min_select_confidence:
+            status = "low_confidence"
+            selected = []
+        else:
+            status = "selected"
+            selected = parsed["selected_candidate_ids"]
+        return {
+            "status": status,
+            "decision": parsed["decision"],
+            "selected_candidate_ids": selected,
+            "model_selected_candidate_ids": parsed["selected_candidate_ids"],
+            "candidate_assessments": parsed["candidate_assessments"],
+            "confidence": parsed["confidence"],
+            "reason": parsed["reason"],
+            "selector": parsed["selector"],
+            "attempts": attempts,
+        }
+
+    raise AssertionError("unreachable ranked-mask verifier retry state")
 
 
 def run_identity_verifier(

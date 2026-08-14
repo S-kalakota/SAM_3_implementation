@@ -14,9 +14,9 @@ Usage:
   run_vla_pickup.sh "pick up the grey and orange box"
   run_vla_pickup.sh --execute "pick up the grey and orange box"
 
-Without --execute, this creates a new camera target and runs both hover and
-pickup plans without moving the arm.  --execute asks for separate confirmation
-before the hover and before the experimental pickup.
+Without --execute, this creates a new camera target and plans the complete
+pickup without moving the arm. --execute starts the experimental pickup
+sequence immediately after target creation and successful motion preflight.
 EOF
 }
 
@@ -81,17 +81,13 @@ if command -v xdg-open >/dev/null 2>&1; then
 fi
 
 echo
-echo "Planning 100 mm hover (no motion)..."
-ros2 run fr5_bringup b3_hover.py --target-file="${TARGET_FILE}"
-
-echo
-echo "Planning pickup sequence (no motion)..."
+echo "Planning complete pickup sequence (no motion)..."
 ros2 run fr5_bringup d0_point_grab.py --target-file="${TARGET_FILE}"
 
 if [[ "${EXECUTE}" != true ]]; then
     cat <<EOF
 
-No motion occurred.  Review ${AUDIT_FILE} and both printed plans.
+No motion occurred. Review ${AUDIT_FILE} and the printed pickup plan.
 If the selected box and physical path are correct, rerun with:
 
   ${0} --execute "${REQUEST}"
@@ -99,12 +95,8 @@ EOF
     exit 0
 fi
 
-read -r -p "Audit and plan reviewed; path clear; hand is on the e-stop. Type HOVER to move to the 100 mm hover: " reply
-[[ "${reply}" == "HOVER" ]] || die "hover execution cancelled"
-ros2 run fr5_bringup b3_hover.py --target-file="${TARGET_FILE}" --execute
-
-read -r -p "Hover position physically verified. Type PICK to run the experimental pickup: " reply
-[[ "${reply}" == "PICK" ]] || die "pickup execution cancelled"
+echo
+echo "Preflight passed; --execute was supplied, so pickup is starting now."
 ros2 run fr5_bringup d0_point_grab.py \
     --target-file="${TARGET_FILE}" \
     --execute --confirm-ungated-grab
