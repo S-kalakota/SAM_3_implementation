@@ -35,3 +35,4 @@ link_package() {
 
 link_package fairino_description
 link_package fairino_hardware_v3_9_6
+link_package fairino_msgs

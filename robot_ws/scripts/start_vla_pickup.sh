@@ -43,7 +43,8 @@ source /opt/ros/jazzy/setup.bash
 cd -- "${WORKSPACE}"
 set -u
 colcon build --packages-select \
-    fairino_description fairino_hardware_v3_9_6 fr5_bringup
+    fairino_msgs fairino_description fairino_hardware_v3_9_6 fr5_bringup \
+    --allow-overriding fairino_msgs fairino_description
 # Re-source after the build so a newly installed entry point is available.
 set +u
 source install/setup.bash
