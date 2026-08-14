@@ -100,6 +100,7 @@ class VlaPickTargetTests(unittest.TestCase):
                 'bbox_xywh_crop_pixels': [10, 20, 30, 40],
                 'center_xy_crop_pixels': [25.0, 40.0],
                 'center_xy_full_pixels': [473.0, 400.0],
+                'center_method': 'sam_mask_centroid',
             },
             'zed_frame': {
                 'crop': {'output_width': 384, 'output_height': 360},
@@ -112,6 +113,22 @@ class VlaPickTargetTests(unittest.TestCase):
         self.assertEqual(local, [25, 40])
         self.assertEqual(full, [473, 400])
         self.assertEqual((width, height), (384, 360))
+
+    def test_refuses_stale_bbox_center_service_contract(self):
+        response = {
+            'num_kept': 1,
+            'selected_mask': {
+                'bbox_xywh_crop_pixels': [10, 20, 30, 40],
+                'center_xy_crop_pixels': [25.0, 40.0],
+                'center_xy_full_pixels': [473.0, 400.0],
+            },
+            'zed_frame': {
+                'crop': {'output_width': 384, 'output_height': 360},
+            },
+        }
+
+        with self.assertRaisesRegex(MODULE.IntegrationError, 'restart'):
+            MODULE.selected_box(response)
 
     def test_refuses_ambiguous_sam_result(self):
         """An unresolved multiple-mask result cannot become a target."""

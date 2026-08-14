@@ -82,6 +82,7 @@ DEFAULT_PLANS_DB = (Path.home() / 'fairino_ros_connector' /
 OPEN_PCT = 100
 DEFAULT_GRASP_CLOSE_PCT = 60
 DEFAULT_MIN_GRASP_POSITION_DELTA_PCT = 8.0
+DEFAULT_MAX_VERIFIED_GRASP_POSITION_PCT = 95.0
 DEFAULT_MIN_GRASP_CURRENT_PCT = 0.0
 DEFAULT_GRASP_DEPTH_MM = 5.0
 DEFAULT_GRASP_RETRIES = 2
@@ -656,7 +657,8 @@ def verify_tcp(node, expected, label):
             f'(limit {CONTROLLER_GOAL_TOLERANCE_M * 1000.0:.1f} mm)')
 
 
-def assess_grasp(result, min_position_delta_pct, min_current_pct):
+def assess_grasp(result, min_position_delta_pct, max_position_pct,
+                 min_current_pct):
     """Return whether measured gripper behavior indicates blocked closure."""
     if not result.completed:
         return False, 'gripper motion did not complete'
@@ -671,6 +673,12 @@ def assess_grasp(result, min_position_delta_pct, min_current_pct):
             f'jaws stopped only {position_delta:.1f} percentage points above '
             f'the {result.target_pct}% target; required '
             f'{min_position_delta_pct:.1f}')
+
+    if result.final_position_pct > max_position_pct:
+        return False, (
+            f'jaws remained {result.final_position_pct:.1f}% open '
+            f'(maximum verified grasp position {max_position_pct:.1f}%); '
+            'likely side contact or target misalignment')
 
     if min_current_pct > 0.0:
         if result.peak_current_pct is None:
@@ -776,6 +784,12 @@ def parse_args(argv=None):
                         default=DEFAULT_MIN_GRASP_CURRENT_PCT,
                         help='optional minimum peak motor current; 0 logs '
                              'current without gating (default: 0)')
+    parser.add_argument('--max-verified-grasp-position-pct', type=float,
+                        default=DEFAULT_MAX_VERIFIED_GRASP_POSITION_PCT,
+                        help='reject a blocked close that remains nearly fully '
+                             'open, which indicates likely side contact '
+                             f'(default: '
+                             f'{DEFAULT_MAX_VERIFIED_GRASP_POSITION_PCT:g})')
     parser.add_argument('--grasp-retries', type=int,
                         default=DEFAULT_GRASP_RETRIES,
                         help='number of deeper retries after a verified empty '
@@ -825,6 +839,13 @@ def parse_args(argv=None):
             args.min_grasp_current_pct < 0.0 or
             args.min_grasp_current_pct > 100.0):
         parser.error('--min-grasp-current-pct must be finite and in [0, 100]')
+    minimum_verified_position = (
+        args.grasp_close_pct + args.min_grasp_position_delta_pct)
+    if (not math.isfinite(args.max_verified_grasp_position_pct) or
+            args.max_verified_grasp_position_pct < minimum_verified_position or
+            args.max_verified_grasp_position_pct >= OPEN_PCT):
+        parser.error('--max-verified-grasp-position-pct must be finite, at '
+                     'least close target + minimum delta, and below 100')
     if args.grasp_retries < 0 or args.grasp_retries > MAX_GRASP_RETRIES:
         parser.error(f'--grasp-retries must be in [0, {MAX_GRASP_RETRIES}]')
     if (not math.isfinite(args.retry_step_mm) or
@@ -918,7 +939,9 @@ def main(argv=None):
     print(f'gripper: open {OPEN_PCT}% -> command {args.grasp_close_pct}%')
     print('grasp verification: final position >= '
           f'{minimum_blocked_position:g}% '
-          f'(blocked by >= {args.min_grasp_position_delta_pct:g} points); '
+          f'and <= {args.max_verified_grasp_position_pct:g}% '
+          f'(blocked by >= {args.min_grasp_position_delta_pct:g} points '
+          'without remaining fully open); '
           f'peak current {current_gate}')
     print(f'mode: {"EXECUTE - ROBOT WILL MOVE" if args.execute else "PLAN ONLY"}')
     print('WARNING: no table plane, object-height, bin-wall, or environment '
@@ -1048,6 +1071,7 @@ def main(argv=None):
             close_result = gripper.move_measured(args.grasp_close_pct)
             grasp_verified, grasp_detail = assess_grasp(
                 close_result, args.min_grasp_position_delta_pct,
+                args.max_verified_grasp_position_pct,
                 args.min_grasp_current_pct)
             retryable = is_retryable_empty_close(
                 close_result, args.min_grasp_position_delta_pct)
@@ -1122,13 +1146,15 @@ def main(argv=None):
         held_current_text = ('?' if held_current is None else
                              f'{held_current:.1f}')
         if (held_position is None or
-                held_position < minimum_blocked_position):
+                held_position < minimum_blocked_position or
+                held_position > args.max_verified_grasp_position_pct):
             held_position_text = ('?' if held_position is None else
                                   f'{held_position:.1f}')
             raise HoverError(
                 'initial grasp passed, but hold verification at standby failed: '
                 f'position={held_position_text}% (required >= '
-                f'{minimum_blocked_position:g}%), '
+                f'{minimum_blocked_position:g}% and <= '
+                f'{args.max_verified_grasp_position_pct:g}%), '
                 f'current={held_current_text}%')
         print('\nPOINT GRAB SEQUENCE PASS: verified object remains between the '
               f'fingers at standby; position={held_position:.1f}%, '

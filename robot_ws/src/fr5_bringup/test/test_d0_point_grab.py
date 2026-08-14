@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -44,6 +45,34 @@ class PointGrabGeometryTests(unittest.TestCase):
     def test_rejects_excessive_combined_tip_extension(self):
         with self.assertRaises(SystemExit):
             MODULE.parse_args(['--fingertip-down-offset-mm', '80'])
+
+    def test_nearly_open_side_contact_is_not_a_verified_grasp(self):
+        result = SimpleNamespace(
+            target_pct=60,
+            completed=True,
+            final_position_pct=99.0,
+            peak_current_pct=0.0,
+            sample_count=11,
+        )
+
+        verified, detail = MODULE.assess_grasp(result, 8.0, 95.0, 0.0)
+
+        self.assertFalse(verified)
+        self.assertIn('side contact', detail)
+        self.assertFalse(MODULE.is_retryable_empty_close(result, 8.0))
+
+    def test_midstroke_blockage_can_verify_a_grasp(self):
+        result = SimpleNamespace(
+            target_pct=60,
+            completed=True,
+            final_position_pct=80.0,
+            peak_current_pct=5.0,
+            sample_count=11,
+        )
+
+        verified, _detail = MODULE.assess_grasp(result, 8.0, 95.0, 0.0)
+
+        self.assertTrue(verified)
 
 
 if __name__ == '__main__':

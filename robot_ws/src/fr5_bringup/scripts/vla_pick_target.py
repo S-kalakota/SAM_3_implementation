@@ -3,8 +3,8 @@
 
 This process has no robot-motion interface.  It parses a constrained pick
 request with ``VLA_project``, asks the resident Grounding DINO/SAM 3.1 service
-for one fresh segmentation, back-projects the selected object's bounding-box
-center with robust median ZED depth, and writes the schema-1 target consumed by
+for one fresh segmentation, back-projects the selected SAM mask centroid with
+robust median ZED depth, and writes the schema-1 target consumed by
 ``b3_hover.py`` and
 ``d0_point_grab.py``.
 
@@ -47,7 +47,7 @@ CALIBRATION_MARGIN_M = 0.075
 DEFAULT_MIN_SCORE = 0.10
 DEFAULT_MIN_VALID_DEPTH_FRACTION = 0.80
 DEFAULT_MIN_VALID_DEPTH_PIXELS = 20
-DEFAULT_MAX_XYZ_DISAGREEMENT_MM = 60.0
+DEFAULT_MAX_XYZ_DISAGREEMENT_MM = 40.0
 DEFAULT_MAX_FRAME_AGE_S = 30.0
 DEFAULT_MIN_OBJECT_EXTENT_MM = 5.0
 DEFAULT_MAX_OBJECT_EXTENT_MM = 600.0
@@ -435,6 +435,10 @@ def selected_box(
             f'exactly one mask is required; SAM kept {response.get("num_kept")!r}')
     selected_mask = response.get('selected_mask')
     if isinstance(selected_mask, dict):
+        if selected_mask.get('center_method') != 'sam_mask_centroid':
+            raise IntegrationError(
+                'SAM service did not provide a mask-centroid target; restart '
+                'the perception service before creating a robot target')
         zed_frame = response.get('zed_frame')
         crop = zed_frame.get('crop') if isinstance(zed_frame, dict) else None
         if not isinstance(crop, dict):
@@ -666,7 +670,7 @@ def build_target_record(
     disagreement = float(np.linalg.norm(camera_xyz - service_xyz))
     if disagreement > max_xyz_disagreement_m:
         raise IntegrationError(
-            'box-center back-projection disagrees with SAM mask XYZ by '
+            'mask-centroid back-projection disagrees with SAM mask XYZ by '
             f'{disagreement * 1000:.1f} mm '
             f'(limit {max_xyz_disagreement_m * 1000:.1f} mm)')
     error = envelope_error(
@@ -688,7 +692,7 @@ def build_target_record(
     return {
         'schema_version': 1,
         'created': captured.isoformat(timespec='seconds'),
-        'purpose': 'VLA-selected SAM bounding-box-center surface target',
+        'purpose': 'VLA-selected SAM mask-centroid surface target',
         'producer': 'fr5_bringup/vla_pick_target.py',
         'calibration_file': str(calibration.path),
         'calibration_created': calibration.raw.get('created'),
@@ -714,7 +718,7 @@ def build_target_record(
             'sam_prompts': response.get('sam_prompts'),
             'score': score,
             'bbox_xyxy_in_segmentation_image': bbox_local,
-            'bbox_center_pixel_in_segmentation_image': center_local,
+            'mask_centroid_pixel_in_segmentation_image': center_local,
             'selection': response.get('selection'),
             'result_json': response.get('result_json'),
             'sam_json': response.get('sam_json'),
@@ -732,7 +736,7 @@ def build_target_record(
         },
         'pixel': center_full,
         'camera_xyz_method': (
-            'SAM bounding-box center back-projected with masked median ZED depth'),
+            'SAM mask centroid back-projected with masked median ZED depth'),
         'camera_xyz_m': camera_xyz.tolist(),
         'camera_xyz_reference_m': service_xyz.tolist(),
         'camera_xyz_reference_method': 'per-axis median XYZ under selected mask',
@@ -803,7 +807,7 @@ def render_audit(
         f'NO ROBOT MOTION | {intent.transcript[:100]}',
         f'target: {intent.segmentation_request} | score '
         f'{record["segmentation"]["score"]:.3f}',
-        f'box center: full pixel {record["pixel"]} | depth '
+        f'mask center: full pixel {record["pixel"]} | depth '
         f'{record["depth_evidence"]["selected_depth_m"]:.3f} m',
         'base XYZ m: ' + ' '.join(f'{value:+.4f}' for value in base),
     ]
@@ -831,7 +835,7 @@ def print_handoff(record: dict[str, Any], target_path: Path, audit_path: Path) -
     print('\n=== VLA TARGET ACCEPTED (NO ROBOT MOTION OCCURRED) ===')
     print(f'transcript:  {record["transcript"]["text"]}')
     print(f'intent:      {record["intent"]}')
-    print(f'box center:  {record["pixel"]}')
+    print(f'mask center: {record["pixel"]}')
     print('camera XYZ:  ' + ' '.join(
         f'{value:+.6f}' for value in record['camera_xyz_m']) + ' m')
     print('base surface:' + ' '.join(

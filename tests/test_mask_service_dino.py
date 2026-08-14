@@ -715,7 +715,7 @@ class DirectPipelineTests(unittest.TestCase):
         self.assertEqual(intent["target_phrase"], "orange box")
         self.assertEqual(intent["parser"], "qwen_json_ambiguity_fallback")
 
-    def test_selected_mask_center_preserves_historical_crop_translation(self) -> None:
+    def test_selected_mask_uses_mask_centroid_and_crop_translation(self) -> None:
         mask = one_mask(10)
         record = mask_service.build_selected_mask_record(
             [(mask, 0.9)],
@@ -729,8 +729,10 @@ class DirectPipelineTests(unittest.TestCase):
             [],
         )
         self.assertIsNotNone(record)
-        self.assertEqual(record["center_xy_crop_pixels"], [25.0, 30.0])
-        self.assertEqual(record["center_xy_full_pixels"], [473.0, 390.0])
+        self.assertEqual(record["center_method"], "sam_mask_centroid")
+        self.assertEqual(record["center_xy_crop_pixels"], [24.5, 29.5])
+        self.assertEqual(record["center_xy_full_pixels"], [472.5, 389.5])
+        self.assertEqual(record["bbox_center_xy_crop_pixels"], [25.0, 30.0])
 
 class V1RobotBridgeContractTests(unittest.TestCase):
     def setUp(self) -> None:

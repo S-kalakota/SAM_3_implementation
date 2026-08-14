@@ -1861,9 +1861,14 @@ def build_selected_mask_record(
         int(xs.max() - xs.min() + 1),
         int(ys.max() - ys.min() + 1),
     ]
-    # Match the historical ROS fallback, which derives the target pixel from
-    # the normalized SAM bounding-box center rather than the mask centroid.
+    # The robot must aim at the segmented object's center, not the center of a
+    # rectangular proposal that can include asymmetric background.  ``kept``
+    # already contains the final geometry/depth-refined mask.
     center = [
+        float(xs.mean()),
+        float(ys.mean()),
+    ]
+    bbox_center = [
         float(bbox[0] + bbox[2] / 2.0),
         float(bbox[1] + bbox[3] / 2.0),
     ]
@@ -1905,6 +1910,11 @@ def build_selected_mask_record(
         "bbox_xywh_normalized": grounding_dino.mask_bbox_xywh_normalized(mask),
         "center_xy_crop_pixels": center,
         "center_xy_full_pixels": full_center,
+        "center_method": "sam_mask_centroid",
+        "bbox_center_xy_crop_pixels": bbox_center,
+        "bbox_center_xy_full_pixels": grounding_dino.crop_point_to_full(
+            bbox_center, crop_xywh
+        ),
         "crop_to_full_offset_xy_pixels": [offset_x, offset_y],
         "mask_artifact": None
         if provenance is None

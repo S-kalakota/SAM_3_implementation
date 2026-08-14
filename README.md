@@ -39,8 +39,9 @@ The integrated robot path uses the bounded `./sam3-dino` service:
    crops, the structured prompt, and measured candidate geometry. It must return
    zero or one best mask; pixel/depth selectors are checked deterministically.
 7. Mask geometry, workspace, depth coverage, physical-size, and
-   calibration-envelope gates must all pass. The selected object's bounding-box
-   center is used for image X/Y with robust masked-median depth for Z.
+   calibration-envelope gates must all pass. The final SAM mask centroid is
+   used for image X/Y with robust masked-median depth for Z; proposal-box center
+   is retained only as audit evidence.
 8. The selected center point is transformed from `zed_left_optical` into
    `base_link`, then written to `/tmp/fr5_vla_target.json` with an audit image.
 9. ROS 2/MoveIt plans the hover and pickup. Execution remains a separate,
@@ -282,6 +283,11 @@ The fingertip TCP also receives a fixed 47 mm downward correction in
 cannot shift the detected object center in X or Y when the wrist is tilted. It
 does not alter the wrist-to-TCP calibration. Override it with
 `--fingertip-down-offset-mm` on `d0_point_grab.py`.
+
+A close that remains above 95% open is treated as side contact or target
+misalignment, not a successful grasp. The executor reopens before retreat and
+does not make a deeper retry from that unsafe outcome. A verified grasp must
+stop between 68% and 95% with the default close command and obstruction delta.
 
 ### Voice input
 
