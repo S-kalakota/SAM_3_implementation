@@ -9,7 +9,7 @@ never moves the robot.
 For the normal two-terminal workflow, run this in the first terminal:
 
 ```bash
-~/VLA_Model_Work/robot_ws/scripts/start_vla_pickup.sh
+./robot_ws/scripts/start_vla_pickup.sh
 ```
 
 It stops the system-managed ZED RTSP stream when necessary (and may ask for
@@ -20,7 +20,7 @@ trajectory.
 In a second terminal, create a target and run the complete no-motion review:
 
 ```bash
-~/VLA_Model_Work/robot_ws/scripts/run_vla_pickup.sh \
+./robot_ws/scripts/run_vla_pickup.sh \
   "pick up the grey and orange box"
 ```
 
@@ -34,7 +34,7 @@ confirmations after the audit and plan are reviewed.
 ## 1. Start the resident perception service
 
 ```bash
-cd ~/VLA_Model_Work/GroundingDino
+cd /path/to/grounded-cobot-vla
 ./sam3-dino start
 ```
 
@@ -46,7 +46,7 @@ verifier policy, and depth-refinement gates.
 ## 2. Build and create one no-motion target
 
 ```bash
-cd ~/VLA_Model_Work/robot_ws
+cd /path/to/grounded-cobot-vla/robot_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select fr5_bringup
 source install/setup.bash
@@ -100,8 +100,8 @@ For push-to-talk, run the source script with the VLA environment containing
 Whisper:
 
 ```bash
-~/VLA_Model_Work/VLA_project/.venv/bin/python \
-  ~/VLA_Model_Work/robot_ws/src/fr5_bringup/scripts/vla_pick_target.py \
+.venv/bin/python \
+  robot_ws/src/fr5_bringup/scripts/vla_pick_target.py \
   --voice --voice-duration 5
 ```
 

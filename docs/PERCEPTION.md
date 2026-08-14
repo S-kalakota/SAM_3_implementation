@@ -1,4 +1,4 @@
-# SAM 3.1 ZED Segmentation
+# Perception service internals
 
 ## Quick start
 
@@ -30,10 +30,10 @@ FR5 target bridge. Start perception first, then create a checked target from the
 ROS workspace:
 
 ```bash
-cd /home/team/VLA_Model_Work/GroundingDino
+cd /path/to/grounded-cobot-vla
 ./sam3-dino start
 
-cd /home/team/VLA_Model_Work/robot_ws
+cd /path/to/grounded-cobot-vla/robot_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ros2 run fr5_bringup vla_pick_target.py \
