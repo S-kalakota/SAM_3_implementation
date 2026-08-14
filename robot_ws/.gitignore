@@ -1,0 +1,14 @@
+# ROS 2 / colcon generated output. Build logs can contain host environment
+# values and must be regenerated locally rather than committed.
+build/
+install/
+log/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,8 @@
+# DH PGC140 numbers measured during the A2 stroke test
+# (a2_gripper.py --stroke-test, calipers; measured 2026-07-15 on the rig).
+# Consumed later by the C2 grasp width check and C3 safety gate:
+# a box is only graspable if its short side < max_jaw_stroke_m.
+max_jaw_stroke_m: 0.050     # jaw-to-jaw opening at 100% (matches URDF 2x0.025)
+closed_gap_m: 0.000         # pads touch when fully closed
+finger_pad_width_m: 0.020
+finger_pad_length_m: 0.040

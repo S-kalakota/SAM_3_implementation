@@ -1,0 +1,95 @@
+# Language request to checked FR5 target
+
+`vla_pick_target.py` connects the text/voice command parser, the resident
+Grounding DINO/SAM 3.1/Qwen/ZED service, and the FR5 target-file interface. It
+never moves the robot.
+
+## 1. Start the resident perception service
+
+```bash
+cd ~/VLA_Model_Work/GroundingDino
+./sam3-dino start
+```
+
+After pulling or editing perception code, use `./sam3-dino restart` once. The
+service owns the ZED camera while it is running. `./sam3-dino status` reports
+the active crop, DINO proposal thresholds, SAM presence threshold, Qwen model,
+verifier policy, and depth-refinement gates.
+
+## 2. Build and create one no-motion target
+
+```bash
+cd ~/VLA_Model_Work/robot_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select fr5_bringup
+source install/setup.bash
+
+ros2 run fr5_bringup vla_pick_target.py \
+  --text "pick up the rightmost yellow box"
+```
+
+The bridge separates the robot action/destination from one versioned visual
+intent. It sends that intent and its SHA-256 hash to the DINO service's
+`/v1/segment` endpoint. The service validates the sealed intent before camera
+capture, derives the DINO target phrase without re-parsing the command, and
+returns the same source phrase, schema, complete intent, and hash. The bridge
+refuses any identity mismatch.
+
+The bounded DINO architecture is the default. The unbounded SAM/Qwen agent
+fallback is disabled for robot-target creation unless `--agent-fallback` is
+explicitly supplied for a diagnostic run. Source-region and relational intents
+currently fail closed because this DINO path does not yet apply those semantics
+deterministically; object attributes and one spatial selector are supported.
+
+Accepted requests write:
+
+- `/tmp/fr5_vla_target_audit.png`: selected box, center, depth, and base XYZ;
+- `/tmp/fr5_vla_target.json`: schema-1 surface target for the existing B3/D0
+  tools;
+- the crop-local and full-frame binary masks beneath the SAM result directory.
+
+Rejected requests write no new target. An older `/tmp/fr5_vla_target.json` can
+still exist, so never use it after a refusal without checking its timestamp.
+
+## Safety gates
+
+The complete path is fail-closed and requires:
+
+- schema-valid, unambiguous structured intent and matching identity hash;
+- at most three Grounding DINO proposals refined by SAM, followed by Qwen
+  identity verification on unmodified DINO-box crops;
+- deterministic spatial-selector resolution after semantic verification;
+- conservative geometry and ZED depth-discontinuity mask refinement;
+- workspace membership and a mask score greater than `0.10`;
+- at least 80% valid masked depth, at least 20 depth pixels, and no more than
+  75 mm p90-p10 depth spread;
+- plausible projected object size and calibrated camera/base workspace bounds;
+- a calibrated surface-height range and camera-XYZ consistency.
+
+The Qwen verifier threshold (`0.70`) and oversized-mask limit (`0.25` of the
+workspace crop) are independent of the SAM score threshold.
+
+For push-to-talk, run the source script with the VLA environment containing
+Whisper:
+
+```bash
+~/VLA_Model_Work/VLA_project/.venv/bin/python \
+  ~/VLA_Model_Work/robot_ws/src/fr5_bringup/scripts/vla_pick_target.py \
+  --voice --voice-duration 5
+```
+
+## 3. Inspect and plan before any motion
+
+```bash
+xdg-open /tmp/fr5_vla_target_audit.png
+jq . /tmp/fr5_vla_target.json
+
+ros2 run fr5_bringup b3_hover.py \
+  --target-file=/tmp/fr5_vla_target.json
+
+ros2 run fr5_bringup d0_point_grab.py \
+  --target-file=/tmp/fr5_vla_target.json
+```
+
+Both robot commands above are plan-only by default. The language/SAM bridge has
+no live-execution flag; real motion remains a separately reviewed D0 operation.

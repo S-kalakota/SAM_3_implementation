@@ -1,0 +1,19 @@
+# MoveIt -> ros2_control controller mapping. Controller name matches both the
+# fairino5_v6_moveit2_config and the production fairino_plan_executor bringup.
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - fairino5_controller
+
+  fairino5_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - j1
+      - j2
+      - j3
+      - j4
+      - j5
+      - j6
