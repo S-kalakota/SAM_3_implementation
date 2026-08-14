@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <!--
+        ros2_control block for the fairino5 with a runtime sim/real switch.
+        Copied from fairino_plan_executor/config/fairino5_ros2_control.xacro
+        (macro renamed fr5_ros2_control); keep behavior identical - this exact
+        joint layout is what FairinoHardwareInterface::on_init accepts.
+          use_fake_hardware true  -> mock_components/GenericSystem (simulation)
+          use_fake_hardware false -> fairino_hardware/FairinoHardwareInterface (real robot)
+    -->
+    <xacro:macro name="fr5_ros2_control"
+                 params="name initial_positions_file use_fake_hardware:=true">
+        <xacro:property name="initial_positions"
+                        value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
+
+        <ros2_control name="${name}" type="system">
+            <hardware>
+                <xacro:if value="${use_fake_hardware in ['true', 'True', True, '1', 1]}">
+                    <plugin>mock_components/GenericSystem</plugin>
+                    <param name="calculate_dynamics">true</param>
+                </xacro:if>
+                <xacro:unless value="${use_fake_hardware in ['true', 'True', True, '1', 1]}">
+                    <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
+                </xacro:unless>
+            </hardware>
+
+            <joint name="j1">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['j1']}</param>
+                </state_interface>
+            </joint>
+            <joint name="j2">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['j2']}</param>
+                </state_interface>
+            </joint>
+            <joint name="j3">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['j3']}</param>
+                </state_interface>
+            </joint>
+            <joint name="j4">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['j4']}</param>
+                </state_interface>
+            </joint>
+            <joint name="j5">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['j5']}</param>
+                </state_interface>
+            </joint>
+            <joint name="j6">
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">${initial_positions['j6']}</param>
+                </state_interface>
+            </joint>
+            <joint name="gripper_finger1_joint">
+                <!--
+                  The gripper is NOT driven through ros2_control - it is a
+                  discrete SDK device commanded out-of-band (Task A2). Declared
+                  only so FairinoHardwareInterface::on_init passes its one
+                  command + one state interface per joint check and so
+                  joint_state_broadcaster publishes the joint for RViz/MoveIt.
+                  Keep this comment free of colon-space sequences.
+                -->
+                <command_interface name="position"/>
+                <state_interface name="position">
+                  <param name="initial_value">0.0</param>
+                </state_interface>
+            </joint>
+        </ros2_control>
+    </xacro:macro>
+</robot>

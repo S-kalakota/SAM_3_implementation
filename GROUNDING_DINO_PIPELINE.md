@@ -24,7 +24,7 @@ Grounding DINO uses the official
 Transformers checkpoint. Run the cache command while network access is allowed:
 
 ```bash
-cd /home/team/VLA_Model_Work/GroundingDino
+cd /path/to/grounded-cobot-vla
 ./sam3-dino cache-dino
 ```
 
@@ -42,7 +42,7 @@ SAM checkpoint, starts the service in the background, and waits until SAM,
 Grounding DINO, Qwen, and the ZED camera are ready:
 
 ```bash
-cd /home/team/VLA_Model_Work/GroundingDino
+cd /path/to/grounded-cobot-vla
 ./sam3-dino start
 ```
 

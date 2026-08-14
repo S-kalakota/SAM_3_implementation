@@ -1,0 +1,13 @@
+# Sim mock-hardware start pose = the "standby" pose, i.e. the first waypoint of
+# standby_to_leftgrab (and the home all the *_to_standby plans return to). This
+# keeps the sim within trajectory_player_node's start-position tolerance so
+# plans play without an arm_preflight rejection. Source: db/plans.sqlite
+# trajectories.standby_to_leftgrab points[0]. Re-derive if the standby pose moves.
+initial_positions:
+  j1: 2.51792
+  j2: -0.66024
+  j3: -2.25528
+  j4: -1.00236
+  j5: 1.48657
+  j6: 0.10943
+  gripper_finger1_joint: 0

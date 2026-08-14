@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--This does not replace URDF, and is not an extension of URDF.
+    This is a format for representing semantic information about the robot structure.
+    A URDF file must exist for this robot as well, where the joints and the links that are referenced are defined
+-->
+<robot name="fairino5_v6_robot">
+    <!--GROUPS: Representation of a set of joints and links. This can be useful for specifying DOF to plan for, defining arms, end effectors, etc-->
+    <!--LINKS: When a link is specified, the parent joint of that link (if it exists) is automatically included-->
+    <!--JOINTS: When a joint is specified, the child link of that joint (which will always exist) is automatically included-->
+    <!--CHAINS: When a chain is specified, all the links along the chain (including endpoints) are included in the group. Additionally, all the joints that are parents to included links are also included. This means that joints along the chain and the parent joint of the base link are included in the group-->
+    <!--SUBGROUPS: Groups can also be formed by referencing to already defined group names-->
+    <group name="fairino5_v6_group">
+        <joint name="j1"/>
+        <joint name="j2"/>
+        <joint name="j3"/>
+        <joint name="j4"/>
+        <joint name="j5"/>
+        <joint name="j6"/>
+        <chain base_link="base_link" tip_link="wrist3_link"/>
+    </group>
+    <!--GROUP STATES: Purpose: Define a named state for a particular group, in terms of joint values. This is useful to define states like 'folded arms'-->
+    <group_state name="pos1" group="fairino5_v6_group">
+        <joint name="j1" value="2.1093"/>
+        <joint name="j2" value="-1.9252"/>
+        <joint name="j3" value="1.8901"/>
+        <joint name="j4" value="-1.5202"/>
+        <joint name="j5" value="-1.4343"/>
+        <joint name="j6" value="0"/>
+    </group_state>
+    <group_state name="pos2" group="fairino5_v6_group">
+        <joint name="j1" value="1.0631"/>
+        <joint name="j2" value="-1.6889"/>
+        <joint name="j3" value="1.9839"/>
+        <joint name="j4" value="-1.8239"/>
+        <joint name="j5" value="-1.5018"/>
+        <joint name="j6" value="0"/>
+    </group_state>
+    <!-- PICK-AND-PLACE WAYPOINTS: real poses taught on the Fairino pendant,
+         converted to radians (rad = deg * pi/180). Friendly name ↔ pendant
+         name mapping is documented in docs/saving_plans.md §3a. -->
+    <!-- WS_stby (teach pendant) -->
+    <group_state name="standby" group="fairino5_v6_group">
+        <joint name="j1" value="2.51792"/>
+        <joint name="j2" value="-0.66024"/>
+        <joint name="j3" value="-2.25528"/>
+        <joint name="j4" value="-1.00236"/>
+        <joint name="j5" value="1.48657"/>
+        <joint name="j6" value="0.10943"/>
+    </group_state>
+    <!-- leftgrab (teach pendant) — latest taught start point from
+         db/plans.sqlite:leftgrab_to_leftlift, saved 2026-07-16 -->
+    <group_state name="leftGrab" group="fairino5_v6_group">
+        <joint name="j1" value="2.85548"/>
+        <joint name="j2" value="-1.82207"/>
+        <joint name="j3" value="-1.90724"/>
+        <joint name="j4" value="-0.74070"/>
+        <joint name="j5" value="1.48561"/>
+        <joint name="j6" value="0.35261"/>
+    </group_state>
+    <!-- left-lift (teach pendant) -->
+    <group_state name="leftLift" group="fairino5_v6_group">
+        <joint name="j1" value="2.83164"/>
+        <joint name="j2" value="-1.6093"/>
+        <joint name="j3" value="-1.40623"/>
+        <joint name="j4" value="-1.5029"/>
+        <joint name="j5" value="1.51193"/>
+        <joint name="j6" value="0.49175"/>
+    </group_state>
+    <!-- rightgrab (teach pendant) — latest taught start point from
+         db/plans.sqlite:rightgrab_to_rightlift, saved 2026-07-16 -->
+    <group_state name="rightGrab" group="fairino5_v6_group">
+        <joint name="j1" value="1.94643"/>
+        <joint name="j2" value="-2.06572"/>
+        <joint name="j3" value="-1.52301"/>
+        <joint name="j4" value="-0.93272"/>
+        <joint name="j5" value="1.61157"/>
+        <joint name="j6" value="-0.54261"/>
+    </group_state>
+    <!-- right-lift (teach pendant) -->
+    <group_state name="rightLift" group="fairino5_v6_group">
+        <joint name="j1" value="1.8497"/>
+        <joint name="j2" value="-1.8567"/>
+        <joint name="j3" value="-1.17148"/>
+        <joint name="j4" value="-1.39084"/>
+        <joint name="j5" value="1.71007"/>
+        <joint name="j6" value="-0.59406"/>
+    </group_state>
+    <!-- gentrotate (teach pendant) — new real taught point, sits between
+         standby and transit(p3) in the shared tail. left-mid (the previous
+         synthetic placeholder in this slot) is no longer used by the program. -->
+    <group_state name="genRotate" group="fairino5_v6_group">
+        <joint name="j1" value="0.86418"/>
+        <joint name="j2" value="-0.60127"/>
+        <joint name="j3" value="-2.25853"/>
+        <joint name="j4" value="-0.75313"/>
+        <joint name="j5" value="1.4892"/>
+        <joint name="j6" value="0.10374"/>
+    </group_state>
+    <!-- p3 (teach pendant) — shared transit/drop-approach point, used both
+         on the way to the drop and on the way back to standby -->
+    <group_state name="transit" group="fairino5_v6_group">
+        <joint name="j1" value="-0.5795"/>
+        <joint name="j2" value="-2.18105"/>
+        <joint name="j3" value="-1.77903"/>
+        <joint name="j4" value="1.47156"/>
+        <joint name="j5" value="1.48658"/>
+        <joint name="j6" value="0.10943"/>
+    </group_state>
+    <!-- WS_Pickle_Drop (teach pendant) — drop target changed from
+         WS_Pickle_Drop2 to WS_Pickle_Drop (different taught coordinates) -->
+    <group_state name="drop" group="fairino5_v6_group">
+        <joint name="j1" value="-0.4914"/>
+        <joint name="j2" value="-2.62971"/>
+        <joint name="j3" value="-1.3183"/>
+        <joint name="j4" value="-0.53313"/>
+        <joint name="j5" value="1.48765"/>
+        <joint name="j6" value="0.10941"/>
+    </group_state>
+    <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
+    <disable_collisions link1="base_link" link2="shoulder_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="upperarm_link" reason="Never"/>
+    <disable_collisions link1="forearm_link" link2="shoulder_link" reason="Never"/>
+    <disable_collisions link1="forearm_link" link2="upperarm_link" reason="Adjacent"/>
+    <disable_collisions link1="forearm_link" link2="wrist1_link" reason="Adjacent"/>
+    <disable_collisions link1="shoulder_link" link2="upperarm_link" reason="Adjacent"/>
+    <disable_collisions link1="shoulder_link" link2="wrist1_link" reason="Never"/>
+    <disable_collisions link1="upperarm_link" link2="wrist1_link" reason="Never"/>
+    <disable_collisions link1="wrist1_link" link2="wrist2_link" reason="Adjacent"/>
+    <disable_collisions link1="wrist1_link" link2="wrist3_link" reason="Never"/>
+    <disable_collisions link1="wrist2_link" link2="wrist3_link" reason="Adjacent"/>
+    <!--Gripper additions (fr5_bringup): the DH PGC140 hangs off wrist3_link in
+        fr5.urdf.xacro but the upstream SRDF predates it. Without these
+        disables the always-touching adjacent pairs report permanent collision
+        and every plan fails.-->
+    <passive_joint name="gripper_finger1_joint"/>
+    <disable_collisions link1="wrist3_link" link2="gripper_base_link" reason="Adjacent"/>
+    <disable_collisions link1="wrist2_link" link2="gripper_base_link" reason="Never"/>
+    <disable_collisions link1="wrist1_link" link2="gripper_base_link" reason="Never"/>
+    <disable_collisions link1="gripper_base_link" link2="gripper_finger1_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_base_link" link2="gripper_finger2_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_finger1_link" link2="gripper_finger2_link" reason="Default"/>
+    <disable_collisions link1="wrist3_link" link2="gripper_finger1_link" reason="Never"/>
+    <disable_collisions link1="wrist3_link" link2="gripper_finger2_link" reason="Never"/>
+    <disable_collisions link1="wrist2_link" link2="gripper_finger1_link" reason="Never"/>
+    <disable_collisions link1="wrist2_link" link2="gripper_finger2_link" reason="Never"/>
+</robot>

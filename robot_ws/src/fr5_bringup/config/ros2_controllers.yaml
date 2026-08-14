@@ -1,0 +1,30 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    fairino5_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # No gripper_controller here: the DH gripper is a discrete SDK device
+    # (MoveGripper RPC), not a servo axis, so it is driven out-of-band by
+    # fr5_telemetry_node's GripperCommand action, not by ros2_control. Only
+    # joint_state_broadcaster and fairino5_controller are ever spawned (see
+    # bringup.launch.py). Plans are still *taught* with a GripperActionController
+    # in the plan_saver / MoveIt setup — that config lives in its own package.
+
+fairino5_controller:
+  ros__parameters:
+    joints:
+      - j1
+      - j2
+      - j3
+      - j4
+      - j5
+      - j6
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position

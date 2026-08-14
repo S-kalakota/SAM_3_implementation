@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<!--
+  FR5 + DH PGC140 gripper with a sim/real ros2_control switch.
+  Mirrors fairino_plan_executor/config/fairino5_with_gripper.urdf.xacro (the
+  configuration proven against the real robot) but lives in fr5_bringup so the
+  MoveIt stack can be brought up on the host without the executor package.
+
+  use_fake_hardware: true  -> mock_components/GenericSystem (simulation)
+                     false -> fairino_hardware/FairinoHardwareInterface (real FR5)
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fairino5_v6_robot">
+    <xacro:arg name="initial_positions_file"
+               default="$(find fr5_bringup)/config/initial_positions.yaml" />
+    <xacro:arg name="use_fake_hardware" default="true" />
+
+    <!-- Base arm description from upstream package -->
+    <xacro:include filename="$(find fairino_description)/urdf/fairino5_v6.urdf" />
+
+    <!-- Gripper -->
+    <xacro:include filename="$(find fairino_description)/urdf/dh_pgc140_gripper.urdf.xacro" />
+    <xacro:dh_pgc140_gripper parent="wrist3_link">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:dh_pgc140_gripper>
+
+    <!-- Fingertip TCP (Task A2). Offset in the flange frame, solved by
+         a2_tcp_calibrate.py into config/tcp_offset.yaml. Read the live TCP
+         from TF base_link -> tcp_link. -->
+    <xacro:property name="tcp_offset"
+                    value="${xacro.load_yaml('$(find fr5_bringup)/config/tcp_offset.yaml')}" />
+    <link name="tcp_link" />
+    <joint name="tcp_joint" type="fixed">
+      <origin xyz="${tcp_offset['x']} ${tcp_offset['y']} ${tcp_offset['z']}"
+              rpy="0 0 0" />
+      <parent link="wrist3_link" />
+      <child link="tcp_link" />
+    </joint>
+
+    <!-- ros2_control overlay with sim/real switch -->
+    <xacro:include filename="$(find fr5_bringup)/urdf/fr5_ros2_control.xacro" />
+    <xacro:fr5_ros2_control
+        name="FairinoSystem"
+        initial_positions_file="$(arg initial_positions_file)"
+        use_fake_hardware="$(arg use_fake_hardware)" />
+</robot>
