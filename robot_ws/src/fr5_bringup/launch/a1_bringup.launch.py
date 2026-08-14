@@ -21,6 +21,7 @@ MoveIt plans in frame `base_link` (URDF root); the arm group is
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 
 from launch import LaunchDescription
@@ -33,8 +34,26 @@ from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
-DEFAULT_CAMERA_CALIBRATION = str(
-    Path.home() / 'VLA_Model_Work' / 'robot_ws' / 'calib' / 'T_base_cam.json')
+def _default_camera_calibration():
+    configured = os.environ.get('FR5_CALIB_DIR')
+    if configured:
+        return str(Path(configured).expanduser() / 'T_base_cam.json')
+
+    root = os.environ.get('GROUNDED_COBOT_ROOT')
+    if root:
+        return str(Path(root).expanduser() / 'robot_ws' / 'calib' /
+                   'T_base_cam.json')
+
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / 'sam3-dino').is_file() and (
+                candidate / 'robot_ws').is_dir():
+            return str(candidate / 'robot_ws' / 'calib' / 'T_base_cam.json')
+
+    return str(Path.home() / 'VLA_Model_Work' / 'robot_ws' / 'calib' /
+               'T_base_cam.json')
+
+
+DEFAULT_CAMERA_CALIBRATION = _default_camera_calibration()
 
 
 def _is_true(value):

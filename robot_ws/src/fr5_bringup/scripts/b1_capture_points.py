@@ -52,13 +52,15 @@ import rclpy
 from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
 
+from repo_paths import calibration_dir
+
 BASE_FRAME = 'base_link'
 TCP_FRAME = 'tcp_link'   # A2 fingertip frame; see Next_time.md/Second_plan.md.
 WINDOW = 'B1 touch-point capture'
 PATCH = 5                # pixels; plan calls for a 5x5 median patch
 MIN_VALID_IN_PATCH = 8   # of 25; below this the click is rejected as bad depth
 TCP_SAMPLES = 12
-DEFAULT_OUT = Path.home() / 'VLA_Model_Work' / 'robot_ws' / 'calib' / 'calib_points.json'
+DEFAULT_OUT = calibration_dir(Path(__file__)) / 'calib_points.json'
 
 DEPTH_MODES = {
     'quality': sl.DEPTH_MODE.QUALITY,

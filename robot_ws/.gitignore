@@ -3,6 +3,8 @@
 build/
 install/
 log/
+src/fairino_description
+src/fairino_hardware_v3_9_6
 
 # Python-generated files
 __pycache__/

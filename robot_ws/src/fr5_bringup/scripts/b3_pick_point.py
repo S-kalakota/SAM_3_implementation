@@ -40,8 +40,10 @@ import cv2
 import numpy as np
 import pyzed.sl as sl
 
+from repo_paths import calibration_dir
 
-DEFAULT_CALIB_DIR = Path.home() / 'VLA_Model_Work' / 'robot_ws' / 'calib'
+
+DEFAULT_CALIB_DIR = calibration_dir(Path(__file__))
 DEFAULT_CALIBRATION = DEFAULT_CALIB_DIR / 'T_base_cam.json'
 DEFAULT_OUT = Path('/tmp/fr5_b3_target.json')
 WINDOW = 'B3 pick validation point (NO ROBOT MOTION)'

@@ -29,13 +29,10 @@ from pathlib import Path
 
 import numpy as np
 
+from repo_paths import calibration_dir
 
-DEFAULT_CALIB_DIR = Path(
-    os.environ.get(
-        'FR5_CALIB_DIR',
-        Path.home() / 'VLA_Model_Work' / 'robot_ws' / 'calib',
-    )
-).expanduser()
+
+DEFAULT_CALIB_DIR = calibration_dir(Path(__file__))
 DEFAULT_INPUT = DEFAULT_CALIB_DIR / 'calib_points.json'
 DEFAULT_OUTPUT = DEFAULT_CALIB_DIR / 'T_base_cam.json'
 MIN_POINTS = 8

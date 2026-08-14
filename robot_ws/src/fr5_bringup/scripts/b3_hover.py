@@ -44,6 +44,8 @@ from rclpy.node import Node
 from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
 
+from repo_paths import calibration_dir
+
 
 GROUP = 'fairino5_v6_group'
 BASE_FRAME = 'base_link'
@@ -52,8 +54,7 @@ WRIST_FRAME = 'wrist3_link'
 TCP_FRAME = 'tcp_link'
 ARM_JOINTS = ['j1', 'j2', 'j3', 'j4', 'j5', 'j6']
 ORIENTATION_POSES = ('leftLift', 'rightLift')
-DEFAULT_CALIBRATION = (
-    Path.home() / 'VLA_Model_Work' / 'robot_ws' / 'calib' / 'T_base_cam.json')
+DEFAULT_CALIBRATION = calibration_dir(Path(__file__)) / 'T_base_cam.json'
 HOVER_M = 0.100
 CALIBRATION_MARGIN_M = 0.075
 EXECUTE_CLEARANCE_M = 0.080

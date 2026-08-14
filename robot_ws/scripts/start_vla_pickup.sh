@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 WORKSPACE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PROJECT_ROOT="$(cd -- "${WORKSPACE}/.." && pwd -P)"
-DINO_ROOT="${PROJECT_ROOT}/GroundingDino"
+DINO_ROOT="${GROUNDING_DINO_ROOT:-${PROJECT_ROOT}}"
 
 die() {
     echo "error: $*" >&2
@@ -15,6 +15,7 @@ die() {
 [[ -x "${DINO_ROOT}/sam3-dino" ]] \
     || die "Grounding DINO launcher not found: ${DINO_ROOT}/sam3-dino"
 [[ -f /opt/ros/jazzy/setup.bash ]] || die "ROS Jazzy is not installed"
+"${WORKSPACE}/scripts/link_fairino_packages.sh"
 
 cd -- "${DINO_ROOT}"
 if ./sam3-dino status >/dev/null 2>&1; then
@@ -40,9 +41,9 @@ fi
 set +u
 source /opt/ros/jazzy/setup.bash
 cd -- "${WORKSPACE}"
-source install/setup.bash
 set -u
-colcon build --packages-select fairino_hardware_v3_9_6 fr5_bringup
+colcon build --packages-select \
+    fairino_description fairino_hardware_v3_9_6 fr5_bringup
 # Re-source after the build so a newly installed entry point is available.
 set +u
 source install/setup.bash
@@ -53,7 +54,7 @@ set -u
 # the legacy April build from the underlay.
 V396_PREFIX="${WORKSPACE}/install/fairino_hardware_v3_9_6"
 [[ -d "${V396_PREFIX}" ]] || die "v3.9.6 Fairino hardware package was not installed"
-LEGACY_HARDWARE_PREFIX="/home/team/ros2_ws/install/fairino_hardware"
+LEGACY_HARDWARE_PREFIX="${LEGACY_FAIRINO_PREFIX:-${HOME}/ros2_ws/install/fairino_hardware}"
 
 without_path() {
     local value="$1" excluded="$2" entry result=""
@@ -76,13 +77,13 @@ if pgrep -u "$(id -u)" -f \
     die "the real FR5 bringup is already running; use scripts/run_vla_pickup.sh in another terminal"
 fi
 
-cat <<'EOF'
+cat <<EOF
 
 Grounding DINO is ready.  Starting the real FR5 stack now.
 This connects to the controller but does not command a robot trajectory.
 Leave this terminal running.  In another terminal, run for example:
 
-  /home/team/VLA_Model_Work/robot_ws/scripts/run_vla_pickup.sh \
+  ${WORKSPACE}/scripts/run_vla_pickup.sh \
     "pick up the grey and orange box"
 EOF
 

@@ -23,6 +23,7 @@ install(PROGRAMS
   scripts/b3_pick_point.py
   scripts/b3_hover.py
   scripts/d0_point_grab.py
+  scripts/repo_paths.py
   scripts/vla_pick_target.py
   DESTINATION lib/${PROJECT_NAME}
 )

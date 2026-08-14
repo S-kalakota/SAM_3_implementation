@@ -14,6 +14,7 @@ import numpy as np
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'vla_pick_target.py'
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location('vla_pick_target', SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -33,7 +34,11 @@ class VlaPickTargetTests(unittest.TestCase):
         """Robot targets use the bounded DINO architecture unless requested."""
 
         args = MODULE.parse_args(['--text', 'pick up the orange and grey box'])
-        self.assertEqual(args.sam_project.name, 'GroundingDino')
+        self.assertTrue((args.sam_project / 'sam3-dino').is_file())
+        self.assertEqual(
+            args.vla_project,
+            args.sam_project / 'VLA_project',
+        )
         self.assertFalse(args.agent_fallback)
 
         diagnostic = MODULE.parse_args([

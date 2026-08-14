@@ -7,8 +7,7 @@ for one fresh segmentation, back-projects the selected bounding-box center
 with ZED depth, and writes the schema-1 target consumed by ``b3_hover.py`` and
 ``d0_point_grab.py``.
 
-The DINO service must be running on localhost from
-``~/VLA_Model_Work/GroundingDino``.
+The DINO service must be running on localhost from the monorepo root.
 """
 
 from __future__ import annotations
@@ -29,12 +28,13 @@ from typing import Any
 
 import numpy as np
 
+from repo_paths import calibration_dir, find_repo_root
 
-DEFAULT_PROJECT_ROOT = Path.home() / 'VLA_Model_Work'
+
+DEFAULT_PROJECT_ROOT = find_repo_root(Path(__file__))
 DEFAULT_VLA_PROJECT = DEFAULT_PROJECT_ROOT / 'VLA_project'
-DEFAULT_SAM_PROJECT = DEFAULT_PROJECT_ROOT / 'GroundingDino'
-DEFAULT_CALIBRATION = (
-    DEFAULT_PROJECT_ROOT / 'robot_ws' / 'calib' / 'T_base_cam.json')
+DEFAULT_SAM_PROJECT = DEFAULT_PROJECT_ROOT
+DEFAULT_CALIBRATION = calibration_dir(Path(__file__)) / 'T_base_cam.json'
 DEFAULT_TARGET = Path('/tmp/fr5_vla_target.json')
 DEFAULT_AUDIT = Path('/tmp/fr5_vla_target_audit.png')
 DEFAULT_SERVICE_HOST = '127.0.0.1:8765'
