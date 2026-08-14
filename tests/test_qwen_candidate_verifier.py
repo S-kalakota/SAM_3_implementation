@@ -64,6 +64,36 @@ def identity_json(
     )
 
 
+def ranked_json(
+    *,
+    decision: str = "select",
+    selected: list[int] | None = None,
+    assessments: list[dict] | None = None,
+    confidence: float = 0.9,
+    reason: str = "candidate best matches the prompt",
+) -> str:
+    if selected is None:
+        selected = [1] if decision == "select" else []
+    if assessments is None:
+        assessments = [
+            {
+                "candidate_id": 1,
+                "most_likely_object": "orange and grey box",
+                "matches_target": decision == "select",
+                "match_score": 0.95 if decision == "select" else 0.1,
+            }
+        ]
+    return json.dumps(
+        {
+            "decision": decision,
+            "selected_candidate_ids": selected,
+            "candidate_assessments": assessments,
+            "confidence": confidence,
+            "reason": reason,
+        }
+    )
+
+
 class ParseVerifierResponseTests(unittest.TestCase):
     def test_accepts_strict_select(self) -> None:
         parsed = verifier.parse_verifier_response(
@@ -223,6 +253,124 @@ class ParseIdentityVerifierResponseTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     verifier.identity_verifier_json_schema(value)
+
+
+class RankedMaskVerifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.records = [
+            {
+                "candidate_id": 1,
+                "center_xy_crop_pixels": [20.0, 80.0],
+                "median_depth_m": 1.2,
+                "area_pixels": 800,
+            },
+            {
+                "candidate_id": 2,
+                "center_xy_crop_pixels": [120.0, 30.0],
+                "median_depth_m": 0.9,
+                "area_pixels": 300,
+            },
+        ]
+        self.assessments = [
+            {
+                "candidate_id": 1,
+                "most_likely_object": "orange box",
+                "matches_target": True,
+                "match_score": 0.95,
+            },
+            {
+                "candidate_id": 2,
+                "most_likely_object": "orange box",
+                "matches_target": True,
+                "match_score": 0.80,
+            },
+        ]
+
+    def test_schema_allows_zero_or_one_selected_id(self) -> None:
+        schema = verifier.ranked_mask_verifier_json_schema(2)
+        self.assertEqual(
+            schema["properties"]["selected_candidate_ids"]["maxItems"],
+            1,
+        )
+        self.assertEqual(
+            schema["properties"]["candidate_assessments"]["minItems"],
+            2,
+        )
+
+    def test_no_selector_requires_highest_visual_match(self) -> None:
+        parsed = verifier.parse_ranked_mask_verifier_response(
+            ranked_json(selected=[1], assessments=self.assessments),
+            self.records,
+            selector=None,
+        )
+        self.assertEqual(parsed["selected_candidate_ids"], [1])
+        with self.assertRaisesRegex(
+            verifier.VerifierResponseError,
+            "highest visual match score",
+        ):
+            verifier.parse_ranked_mask_verifier_response(
+                ranked_json(selected=[2], assessments=self.assessments),
+                self.records,
+                selector=None,
+            )
+
+    def test_measured_pixels_and_depth_validate_location_selector(self) -> None:
+        for selector in ("rightmost", "topmost", "nearest"):
+            with self.subTest(selector=selector):
+                parsed = verifier.parse_ranked_mask_verifier_response(
+                    ranked_json(selected=[2], assessments=self.assessments),
+                    self.records,
+                    selector=selector,
+                )
+                self.assertEqual(parsed["selected_candidate_ids"], [2])
+        with self.assertRaisesRegex(
+            verifier.VerifierResponseError,
+            "contradicts measured selector",
+        ):
+            verifier.parse_ranked_mask_verifier_response(
+                ranked_json(selected=[1], assessments=self.assessments),
+                self.records,
+                selector="rightmost",
+            )
+
+    def test_rejects_multiple_selected_masks(self) -> None:
+        with self.assertRaisesRegex(
+            verifier.VerifierResponseError,
+            "at most one candidate",
+        ):
+            verifier.parse_ranked_mask_verifier_response(
+                ranked_json(selected=[1, 2], assessments=self.assessments),
+                self.records,
+                selector=None,
+            )
+
+    def test_ranked_runner_uses_numbered_mask_images(self) -> None:
+        seen_messages = []
+
+        def sender(messages):
+            seen_messages.append(messages)
+            return ranked_json()
+
+        result = verifier.run_ranked_mask_verifier(
+            request="pick the orange box",
+            target_phrase="orange box",
+            selector=None,
+            frame_path=Path("/tmp/raw.png"),
+            candidate_overlay_path=Path("/tmp/masks.png"),
+            candidate_zoom_path=Path("/tmp/zooms.png"),
+            candidate_records=[self.records[0]],
+            send_generate_request=sender,
+            min_select_confidence=0.7,
+            grounding_intent_value={"category": "box"},
+        )
+
+        self.assertEqual(result["status"], "selected")
+        images = [
+            item["image"]
+            for item in seen_messages[0][1]["content"]
+            if item["type"] == "image"
+        ]
+        self.assertEqual(images, ["/tmp/raw.png", "/tmp/masks.png", "/tmp/zooms.png"])
 
 
 class RunVisualVerifierTests(unittest.TestCase):

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Experimental clicked-point grab, deliberately skipping Milestone C1-C3.
 
-The input is the fresh target file written by ``b3_pick_point.py``.  The TCP
-grasp position defaults to 5 mm below the selected camera surface point; no
-table plane, object height, grasp-width, or bin-wall safety gate is applied.
+The input is the fresh target file written by ``b3_pick_point.py``.  The
+calibrated fingertip target receives a fixed 47 mm downward correction in
+``base_link`` with no X/Y component, then defaults to another 5 mm below the
+selected camera surface point; no table plane, object height, grasp-width, or
+bin-wall safety gate is applied.
 
 Plan-only sequence (default):
   validate current state at the saved standby start
@@ -21,10 +23,11 @@ Execution sequence (requires both explicit flags):
   indicating that the object blocked closure.  Peak motor current is recorded
   as supporting evidence.  A clean empty close reopens, retreats to hover,
   resets through the selected proven DB left/right grab pose, returns to the
-  clicked hover, and retries once 5 mm deeper by default.  It does not return
-  to standby between attempts.  Faults and ambiguous feedback do not trigger a
-  deeper retry.  Every attempt emits one structured result record so a future
-  VLA policy can consume the same observation/action/outcome loop.
+  clicked hover, and retries up to twice, 10 mm deeper each time by default
+  (three total attempts). It does not return to standby between attempts.
+  Faults and ambiguous feedback do not trigger a deeper retry. Every attempt
+  emits one structured result record so a future VLA policy can consume the
+  same observation/action/outcome loop.
   Saved database trajectories are replayed point-for-point with their recorded
   timing; MoveIt is used only for the short DB-point/hover connections and the
   Cartesian descent/retreat.
@@ -81,11 +84,14 @@ DEFAULT_GRASP_CLOSE_PCT = 60
 DEFAULT_MIN_GRASP_POSITION_DELTA_PCT = 8.0
 DEFAULT_MIN_GRASP_CURRENT_PCT = 0.0
 DEFAULT_GRASP_DEPTH_MM = 5.0
-DEFAULT_GRASP_RETRIES = 1
-DEFAULT_RETRY_STEP_MM = 5.0
+DEFAULT_GRASP_RETRIES = 2
+DEFAULT_RETRY_STEP_MM = 10.0
+DEFAULT_FINGERTIP_DOWN_OFFSET_MM = 47.0
 MAX_GRASP_DEPTH_MM = 100.0
 MAX_GRASP_RETRIES = 3
 MAX_RETRY_STEP_MM = 20.0
+MAX_FINGERTIP_DOWN_OFFSET_MM = 100.0
+MAX_TCP_BELOW_SURFACE_MM = 100.0
 MAX_TARGET_AGE_S = 600.0
 CARTESIAN_STEP_M = 0.005
 CARTESIAN_SPEED_M_S = 0.020
@@ -292,6 +298,13 @@ def trajectory_end_state(trajectory):
     state.joint_state.name = list(joint_trajectory.joint_names)
     state.joint_state.position = list(joint_trajectory.points[-1].positions)
     return state
+
+
+def apply_fingertip_down_offset(target_position, down_offset_mm):
+    """Apply only a base-frame downward correction; never alter target X/Y."""
+    target = np.asarray(target_position, dtype=float).copy()
+    target[2] -= float(down_offset_mm) / 1000.0
+    return target
 
 
 def choose_db_side(node, choice, target, plans_by_side):
@@ -692,7 +705,8 @@ def grasp_depths(initial_depth_mm, retry_count, retry_step_mm):
 
 
 def print_attempt_result(attempt_number, attempt_count, depth_mm, result,
-                         verified, retryable, detail):
+                         verified, retryable, detail,
+                         fingertip_down_offset_mm):
     """Emit a stable machine-readable observation for a future VLA executive."""
     if verified:
         outcome = 'grasp_verified'
@@ -712,6 +726,8 @@ def print_attempt_result(attempt_number, attempt_count, depth_mm, result,
         'attempts_allowed': attempt_count,
         'action': {
             'grasp_depth_mm': round(float(depth_mm), 3),
+            'fingertip_down_offset_mm': round(
+                float(fingertip_down_offset_mm), 3),
             'grasp_close_pct': result.target_pct,
         },
         'observation': {
@@ -770,6 +786,12 @@ def parse_args(argv=None):
                         help='additional depth for each retry (default: '
                              f'{DEFAULT_RETRY_STEP_MM:g} mm; max: '
                              f'{MAX_RETRY_STEP_MM:g} mm)')
+    parser.add_argument('--fingertip-down-offset-mm', type=float,
+                        default=DEFAULT_FINGERTIP_DOWN_OFFSET_MM,
+                        help='fixed downward TCP correction in base_link; '
+                             'never changes target X/Y (default: '
+                             f'{DEFAULT_FINGERTIP_DOWN_OFFSET_MM:g} mm; max: '
+                             f'{MAX_FINGERTIP_DOWN_OFFSET_MM:g} mm)')
     parser.add_argument('--scale', type=float, default=MAX_SCALE,
                         help=f'arm velocity/acceleration scale, max {MAX_SCALE}')
     parser.add_argument('--max-target-age-sec', type=float,
@@ -810,12 +832,24 @@ def parse_args(argv=None):
             args.retry_step_mm > MAX_RETRY_STEP_MM):
         parser.error('--retry-step-mm must be finite and in '
                      f'(0, {MAX_RETRY_STEP_MM:g}]')
+    if (not math.isfinite(args.fingertip_down_offset_mm) or
+            args.fingertip_down_offset_mm < 0.0 or
+            args.fingertip_down_offset_mm > MAX_FINGERTIP_DOWN_OFFSET_MM):
+        parser.error('--fingertip-down-offset-mm must be finite and in '
+                     f'[0, {MAX_FINGERTIP_DOWN_OFFSET_MM:g}]')
     deepest_depth_mm = (
         args.grasp_depth_mm + args.grasp_retries * args.retry_step_mm)
     if deepest_depth_mm > MAX_GRASP_DEPTH_MM:
         parser.error('initial depth plus retries reaches '
                      f'{deepest_depth_mm:g} mm; maximum allowed grasp depth is '
                      f'{MAX_GRASP_DEPTH_MM:g} mm')
+    deepest_tcp_below_surface_mm = (
+        deepest_depth_mm + args.fingertip_down_offset_mm)
+    if deepest_tcp_below_surface_mm > MAX_TCP_BELOW_SURFACE_MM:
+        parser.error('deepest grasp depth plus fingertip down offset reaches '
+                     f'{deepest_tcp_below_surface_mm:g} mm; maximum allowed '
+                     f'fingertip extension below the surface is '
+                     f'{MAX_TCP_BELOW_SURFACE_MM:g} mm')
     if args.max_target_age_sec <= 0.0 or args.max_target_age_sec > 3600.0:
         parser.error('--max-target-age-sec must be in (0, 3600]')
     if args.execute and not args.confirm_ungated_grab:
@@ -848,19 +882,21 @@ def main(argv=None):
 
     attempt_depths_mm = grasp_depths(
         args.grasp_depth_mm, args.grasp_retries, args.retry_step_mm)
-    grasp_targets = []
+    contact_grasp_targets = []
     for depth_mm in attempt_depths_mm:
         target = surface.copy()
         target[2] -= depth_mm / 1000.0
-        grasp_targets.append(target)
-    grasp = grasp_targets[0]
-    hover = surface + np.asarray([0.0, 0.0, HOVER_M])
+        contact_grasp_targets.append(target)
+    contact_grasp = contact_grasp_targets[0]
+    contact_hover = surface + np.asarray([0.0, 0.0, HOVER_M])
     print('\n=== EXPERIMENTAL CLICKED-POINT GRAB ===')
     print('selected surface point [base_link, m]: '
           + ' '.join(f'{value:+.6f}' for value in surface))
-    print(f'grasp depth correction: {args.grasp_depth_mm:.1f} mm downward')
-    print('offset TCP grasp point [base_link, m]: '
-          + ' '.join(f'{value:+.6f}' for value in grasp))
+    print(f'grasp contact depth: {args.grasp_depth_mm:.1f} mm downward')
+    print('first virtual contact target [base_link, m]: '
+          + ' '.join(f'{value:+.6f}' for value in contact_grasp))
+    print('fingertip correction [base_link]: '
+          f'X=0 mm, Y=0 mm, Z=-{args.fingertip_down_offset_mm:g} mm')
     if args.grasp_retries:
         print('retry policy: '
               f'{args.grasp_retries} deeper retr'
@@ -870,8 +906,8 @@ def main(argv=None):
               + ' mm')
     else:
         print('retry policy: disabled')
-    print('TCP hover point [base_link, m]: '
-          + ' '.join(f'{value:+.6f}' for value in hover))
+    print('virtual contact hover [base_link, m]: '
+          + ' '.join(f'{value:+.6f}' for value in contact_hover))
     print(f'target age: {target_age_s:.1f} s')
     print(f'proven trajectory database: {plans_db_path}')
     minimum_blocked_position = (
@@ -911,12 +947,43 @@ def main(argv=None):
             print(f'PLAN-ONLY WARNING: {message}')
 
         distance, side, _reference_position, tcp_quaternion, down_angle = \
-            choose_db_side(node, args.side, grasp, plans_by_side)
+            choose_db_side(node, args.side, contact_grasp, plans_by_side)
         plans = plans_by_side[side]
         inbound, grab_to_lift, lift_to_standby = plans
         print(f'DB choreography/orientation side: {side} '
               f'(DB grab-point XY distance {distance * 1000.0:.1f} mm, '
               f'tool-down angle {down_angle:.1f} deg)')
+
+        hover = apply_fingertip_down_offset(
+            contact_hover, args.fingertip_down_offset_mm)
+        grasp_targets = [
+            apply_fingertip_down_offset(
+                target, args.fingertip_down_offset_mm)
+            for target in contact_grasp_targets
+        ]
+        for label, target in [('hover TCP', hover)] + [
+                (f'attempt {number} TCP', target)
+                for number, target in enumerate(grasp_targets, start=1)]:
+            try:
+                check_target_envelope(target, base_points)
+            except HoverError as exc:
+                raise HoverError(f'{label} is unsafe: {exc}') from exc
+        for contact_target, tcp_target in zip(
+                [contact_hover] + contact_grasp_targets,
+                [hover] + grasp_targets):
+            if not np.array_equal(contact_target[:2], tcp_target[:2]):
+                raise HoverError(
+                    'internal error: downward correction changed target X/Y')
+        print('commanded fingertip hover [base_link, m]: '
+              + ' '.join(f'{value:+.6f}' for value in hover))
+        for attempt_number, (depth_mm, contact_target, tcp_target) in enumerate(
+                zip(attempt_depths_mm, contact_grasp_targets, grasp_targets),
+                start=1):
+            print(f'  attempt {attempt_number}: contact depth={depth_mm:g} mm; '
+                  'contact=' +
+                  ' '.join(f'{value:+.6f}' for value in contact_target) +
+                  '; fingertip TCP=' +
+                  ' '.join(f'{value:+.6f}' for value in tcp_target))
 
         wrist_hover, wrist_quaternion, tcp_offset = node.desired_wrist_pose(
             hover, tcp_quaternion)
@@ -940,6 +1007,8 @@ def main(argv=None):
                   f'--grasp-close-pct={args.grasp_close_pct} '
                   f'--grasp-retries={args.grasp_retries} '
                   f'--retry-step-mm={args.retry_step_mm:g} '
+                  f'--fingertip-down-offset-mm='
+                  f'{args.fingertip_down_offset_mm:g} '
                   '--execute --confirm-ungated-grab')
             return 0
 
@@ -986,7 +1055,8 @@ def main(argv=None):
             print(f'GRASP VERIFICATION {verdict}: {grasp_detail}')
             print_attempt_result(
                 attempt_number, attempt_count, depth_mm, close_result,
-                grasp_verified, retryable, grasp_detail)
+                grasp_verified, retryable, grasp_detail,
+                args.fingertip_down_offset_mm)
 
             last_reopen_completed = None
             if not grasp_verified:

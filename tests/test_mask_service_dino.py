@@ -82,7 +82,7 @@ def accepted_verification(kept, candidates):
 
 
 class QwenVerificationInputTests(unittest.TestCase):
-    def test_dino_candidates_use_clean_identity_crops(self) -> None:
+    def test_dino_candidates_use_ranked_mask_verifier(self) -> None:
         mask = one_mask()
         kept = [(mask, 0.9)]
         candidate_record = candidate(0, mask)
@@ -103,6 +103,7 @@ class QwenVerificationInputTests(unittest.TestCase):
                     "candidate_id": 1,
                     "most_likely_object": "orange and grey box",
                     "matches_target": True,
+                    "match_score": 0.95,
                 }
             ],
             "confidence": 0.95,
@@ -119,13 +120,13 @@ class QwenVerificationInputTests(unittest.TestCase):
             with (
                 mock.patch.object(
                     mask_service.candidate_verifier,
-                    "run_identity_verifier",
+                    "run_ranked_mask_verifier",
                     return_value=identity_result,
-                ) as identity_call,
+                ) as ranked_call,
                 mock.patch.object(
                     mask_service.candidate_verifier,
-                    "run_visual_verifier",
-                ) as legacy_call,
+                    "run_identity_verifier",
+                ) as identity_call,
             ):
                 selected, updated, verification = (
                     mask_service.verify_candidates_with_qwen(
@@ -142,13 +143,13 @@ class QwenVerificationInputTests(unittest.TestCase):
                     )
                 )
 
-        identity_call.assert_called_once()
-        legacy_call.assert_not_called()
+        ranked_call.assert_called_once()
+        identity_call.assert_not_called()
         self.assertEqual(len(selected), 1)
         self.assertTrue(updated[0]["kept"])
         self.assertEqual(
             verification["verifier_input_mode"],
-            "clean_dino_crops_identity_only",
+            "numbered_masks_ranked_single_choice",
         )
         self.assertTrue(
             verification["candidate_clean_crops"].endswith(
@@ -156,7 +157,7 @@ class QwenVerificationInputTests(unittest.TestCase):
             )
         )
 
-    def test_dino_identity_generation_uses_strict_json_schema(self) -> None:
+    def test_dino_ranked_generation_uses_single_choice_json_schema(self) -> None:
         mask = one_mask()
         kept = [(mask, 0.9)]
         candidate_record = candidate(0, mask)
@@ -176,9 +177,11 @@ class QwenVerificationInputTests(unittest.TestCase):
                         "candidate_id": 1,
                         "most_likely_object": "orange and grey box",
                         "matches_target": True,
+                        "match_score": 0.95,
                     }
                 ],
                 "confidence": 0.95,
+                "reason": "candidate 1 tightly masks the requested box",
             }
         )
 
@@ -215,6 +218,10 @@ class QwenVerificationInputTests(unittest.TestCase):
         schema = generation_kwargs["json_schema"]
         self.assertEqual(
             schema["properties"]["candidate_assessments"]["maxItems"],
+            1,
+        )
+        self.assertEqual(
+            schema["properties"]["selected_candidate_ids"]["maxItems"],
             1,
         )
 
@@ -724,7 +731,6 @@ class DirectPipelineTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record["center_xy_crop_pixels"], [25.0, 30.0])
         self.assertEqual(record["center_xy_full_pixels"], [473.0, 390.0])
-
 
 class V1RobotBridgeContractTests(unittest.TestCase):
     def setUp(self) -> None:

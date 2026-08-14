@@ -3,8 +3,9 @@
 
 This process has no robot-motion interface.  It parses a constrained pick
 request with ``VLA_project``, asks the resident Grounding DINO/SAM 3.1 service
-for one fresh segmentation, back-projects the selected bounding-box center
-with ZED depth, and writes the schema-1 target consumed by ``b3_hover.py`` and
+for one fresh segmentation, back-projects the selected object's bounding-box
+center with robust median ZED depth, and writes the schema-1 target consumed by
+``b3_hover.py`` and
 ``d0_point_grab.py``.
 
 The DINO service must be running on localhost from the monorepo root.
@@ -46,7 +47,6 @@ CALIBRATION_MARGIN_M = 0.075
 DEFAULT_MIN_SCORE = 0.10
 DEFAULT_MIN_VALID_DEPTH_FRACTION = 0.80
 DEFAULT_MIN_VALID_DEPTH_PIXELS = 20
-DEFAULT_MAX_DEPTH_SPREAD_MM = 75.0
 DEFAULT_MAX_XYZ_DISAGREEMENT_MM = 60.0
 DEFAULT_MAX_FRAME_AGE_S = 30.0
 DEFAULT_MIN_OBJECT_EXTENT_MM = 5.0
@@ -540,9 +540,8 @@ def depth_evidence(
     min_score: float,
     min_valid_fraction: float,
     min_valid_pixels: int,
-    max_spread_m: float,
 ) -> tuple[float, float, dict[str, Any], np.ndarray]:
-    """Validate the selected mask's score, depth coverage, and spread."""
+    """Validate score/depth coverage and return robust object depth."""
 
     report = response.get('object_depth')
     objects = report.get('objects') if isinstance(report, dict) else None
@@ -573,13 +572,6 @@ def depth_evidence(
     median_depth = _finite_float(stats.get('median'), 'median depth')
     if median_depth <= 0.0:
         raise IntegrationError('median depth must be positive')
-    p10 = _finite_float(stats.get('p10'), 'depth p10')
-    p90 = _finite_float(stats.get('p90'), 'depth p90')
-    spread = p90 - p10
-    if spread < 0.0 or spread > max_spread_m:
-        raise IntegrationError(
-            f'masked depth p90-p10 spread is {spread * 1000:.1f} mm '
-            f'(limit {max_spread_m * 1000:.1f} mm)')
     try:
         service_xyz = np.asarray(obj.get('xyz_centroid_m'), dtype=float)
     except (TypeError, ValueError) as exc:
@@ -696,7 +688,7 @@ def build_target_record(
     return {
         'schema_version': 1,
         'created': captured.isoformat(timespec='seconds'),
-        'purpose': 'VLA-selected SAM bounding-box center surface target',
+        'purpose': 'VLA-selected SAM bounding-box-center surface target',
         'producer': 'fr5_bringup/vla_pick_target.py',
         'calibration_file': str(calibration.path),
         'calibration_created': calibration.raw.get('created'),
@@ -740,7 +732,7 @@ def build_target_record(
         },
         'pixel': center_full,
         'camera_xyz_method': (
-            'SAM bbox center back-projected with masked median ZED depth'),
+            'SAM bounding-box center back-projected with masked median ZED depth'),
         'camera_xyz_m': camera_xyz.tolist(),
         'camera_xyz_reference_m': service_xyz.tolist(),
         'camera_xyz_reference_method': 'per-axis median XYZ under selected mask',
@@ -888,8 +880,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         default=DEFAULT_MIN_VALID_DEPTH_FRACTION)
     parser.add_argument('--min-valid-depth-pixels', type=int,
                         default=DEFAULT_MIN_VALID_DEPTH_PIXELS)
-    parser.add_argument('--max-depth-spread-mm', type=float,
-                        default=DEFAULT_MAX_DEPTH_SPREAD_MM)
     parser.add_argument('--max-xyz-disagreement-mm', type=float,
                         default=DEFAULT_MAX_XYZ_DISAGREEMENT_MM)
     parser.add_argument('--max-frame-age-sec', type=float,
@@ -914,8 +904,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error('--min-valid-depth-fraction must be in [0, 1]')
     if args.min_valid_depth_pixels < 1:
         parser.error('--min-valid-depth-pixels must be positive')
-    if args.max_depth_spread_mm <= 0.0:
-        parser.error('--max-depth-spread-mm must be positive')
     if args.max_xyz_disagreement_mm <= 0.0:
         parser.error('--max-xyz-disagreement-mm must be positive')
     if args.max_frame_age_sec <= 0.0:
@@ -973,7 +961,6 @@ def main(argv: list[str] | None = None) -> int:
             min_score=args.min_score,
             min_valid_fraction=args.min_valid_depth_fraction,
             min_valid_pixels=args.min_valid_depth_pixels,
-            max_spread_m=args.max_depth_spread_mm / 1000.0,
         )
         record = build_target_record(
             intent=intent,

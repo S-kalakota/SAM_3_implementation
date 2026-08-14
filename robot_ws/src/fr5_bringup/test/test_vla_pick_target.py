@@ -149,6 +149,17 @@ class VlaPickTargetTests(unittest.TestCase):
                 intent,
             )
 
+        with self.assertRaisesRegex(MODULE.IntegrationError, 'inconsistent'):
+            MODULE.validate_response_identity(
+                {
+                    **response,
+                    'selection': {
+                        'selector': 'largest',
+                    },
+                },
+                intent,
+            )
+
     def test_depth_quality_gate_and_back_projection(self):
         """Good mask depth back-projects to the expected camera XYZ."""
 
@@ -172,7 +183,6 @@ class VlaPickTargetTests(unittest.TestCase):
             min_score=0.25,
             min_valid_fraction=0.8,
             min_valid_pixels=20,
-            max_spread_m=0.075,
         )
         projected = MODULE.backproject_pixel(
             [110, 220], depth,
@@ -181,6 +191,35 @@ class VlaPickTargetTests(unittest.TestCase):
 
         self.assertEqual(score, 0.9)
         np.testing.assert_allclose(projected, xyz)
+
+    def test_depth_spread_does_not_reject_center_target(self):
+        """Object relief is recorded but does not block center targeting."""
+
+        response = {
+            'object_depth': {
+                'objects': [{
+                    'score': 0.9,
+                    'depth_stats_m': {
+                        'valid_fraction': 0.95,
+                        'valid_depth_pixels': 100,
+                        'median': 1.0,
+                        'p10': 0.95,
+                        'p90': 1.10,
+                    },
+                    'xyz_centroid_m': [0.1, 0.2, 1.0],
+                }],
+            },
+        }
+
+        _score, depth, stats, _xyz = MODULE.depth_evidence(
+            response,
+            min_score=0.25,
+            min_valid_fraction=0.8,
+            min_valid_pixels=20,
+        )
+
+        self.assertEqual(depth, 1.0)
+        self.assertAlmostEqual(stats['p90'] - stats['p10'], 0.15)
 
     def test_builds_existing_robot_target_contract(self):
         """The bridge output retains the fields B3 and D0 consume."""
