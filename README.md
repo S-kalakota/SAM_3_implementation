@@ -90,7 +90,7 @@ when building a different platform.
 ### 1. Clone
 
 ```bash
-git clone https://github.com/S-kalakota/grounded-cobot-vla.git
+git clone https://github.com/S-kalakota/SAM_3_implementation.git grounded-cobot-vla
 cd grounded-cobot-vla
 ```
 
