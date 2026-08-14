@@ -88,7 +88,10 @@ def parse_transcript_command(text: str) -> TaskCommand:
 
 def _extract_requested_object(text: str) -> str:
     match = re.search(
-        r"\b(?:pick up|pick|grab|move|put|place)\s+(?:the\s+|a\s+|an\s+)?(.+?)(?:\s+(?:from|to|into|onto)\b|$)",
+        r"\b(?:pick up|pick|grab|move|put|place)\s+"
+        r"(?:the\s+|a\s+|an\s+)?(.+?)"
+        r"(?=\s+(?:from|to|into|onto)\b|"
+        r"\s+and\s+(?:place|put|move|drop|set)\b|$)",
         text,
     )
     if match:
@@ -97,13 +100,25 @@ def _extract_requested_object(text: str) -> str:
 
 
 def _extract_source(text: str) -> str | None:
-    match = re.search(r"\bfrom\s+(?:the\s+)?(.+?)(?:\s+(?:to|into|onto)\b|$)", text)
+    match = re.search(
+        r"\bfrom\s+(?:the\s+)?(.+?)"
+        r"(?=\s+(?:to|into|onto)\b|"
+        r"\s+and\s+(?:place|put|move|drop|set)\b|$)",
+        text,
+    )
     if match:
         return match.group(1).strip().rstrip(".")
     return None
 
 
 def _extract_destination(text: str) -> str:
+    action_match = re.search(
+        r"\band\s+(?:place|put|move|drop|set)(?:\s+it)?\s+"
+        r"(?:to|in|into|onto)\s+(?:the\s+)?(.+)$",
+        text,
+    )
+    if action_match:
+        return action_match.group(1).strip().rstrip(".")
     match = re.search(r"\b(?:to|into|onto)\s+(?:the\s+)?(.+)$", text)
     if match:
         return match.group(1).strip().rstrip(".")

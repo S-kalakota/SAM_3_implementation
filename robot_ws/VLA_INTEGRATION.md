@@ -4,6 +4,33 @@
 Grounding DINO/SAM 3.1/Qwen/ZED service, and the FR5 target-file interface. It
 never moves the robot.
 
+## Fast path
+
+For the normal two-terminal workflow, run this in the first terminal:
+
+```bash
+~/VLA_Model_Work/robot_ws/scripts/start_vla_pickup.sh
+```
+
+It stops the system-managed ZED RTSP stream when necessary (and may ask for
+your `sudo` password), starts the resident DINO service, builds the package,
+and launches the real FR5 stack. It stays in the foreground and commands no
+trajectory.
+
+In a second terminal, create a target and run the complete no-motion review:
+
+```bash
+~/VLA_Model_Work/robot_ws/scripts/run_vla_pickup.sh \
+  "pick up the grey and orange box"
+```
+
+The runner allows 45 seconds for a freshly captured frame to complete the
+current Qwen verification stage and waits up to 45 seconds for the FR5 driver
+to publish live joints; keep the scene still during vision capture. It opens
+the audit image and runs both hover and pickup planning commands.
+Physical motion requires an explicit `--execute` plus typed `HOVER` and `PICK`
+confirmations after the audit and plan are reviewed.
+
 ## 1. Start the resident perception service
 
 ```bash

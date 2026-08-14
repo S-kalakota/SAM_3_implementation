@@ -15,7 +15,7 @@
   <test_depend>ament_cmake_pytest</test_depend>
 
   <exec_depend>fairino_description</exec_depend>
-  <exec_depend>fairino_hardware</exec_depend>
+  <exec_depend>fairino_hardware_v3_9_6</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>tf2_ros</exec_depend>

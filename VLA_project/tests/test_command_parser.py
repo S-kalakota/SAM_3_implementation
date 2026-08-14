@@ -29,6 +29,15 @@ class CommandParserTests(unittest.TestCase):
         self.assertEqual(command.object, "orange object")
         self.assertEqual(command.destination, "drop zone")
 
+    def test_destination_action_never_becomes_part_of_visual_object(self) -> None:
+        command = parse_transcript_command(
+            "pick the red box from the top shelf and place it in the right bin"
+        )
+
+        self.assertEqual(command.object, "red box")
+        self.assertEqual(command.source, "top shelf")
+        self.assertEqual(command.destination, "right bin")
+
     def test_parse_transcript_accepts_blue_cube(self) -> None:
         command = parse_transcript_command("pick up the blue cube to the drop zone")
 
